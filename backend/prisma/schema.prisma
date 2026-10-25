@@ -1,0 +1,754 @@
+// =============================================================================
+// Student Internship & Industrial Attachment Management System
+// Prisma schema — mechanical translation of /docs/data-model.md
+// Source of truth: data-model.md (Decisions #1-73). No new design decisions
+// are introduced in this file. Where PostgreSQL needs something Prisma's
+// schema syntax cannot express (partial unique indexes, CHECK constraints,
+// the ReportingScheduleConfig singleton), see constraints.sql — applied as a
+// follow-up migration after `prisma migrate dev`.
+// =============================================================================
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+  directUrl = env("DATABASE_URL_UNPOOLED")
+}
+
+// -----------------------------------------------------------------------------
+// 0. ENUMS
+// -----------------------------------------------------------------------------
+
+enum UserStatus {
+  PENDING_VERIFICATION
+  ACTIVE
+  DEACTIVATED
+}
+
+enum UserRoleName {
+  STUDENT
+  UNIVERSITY_SUPERVISOR
+  ORGANIZATION_SUPERVISOR
+  ADMIN
+}
+
+enum OrganizationStatus {
+  PENDING
+  APPROVED
+  ACTIVE
+  SUSPENDED
+}
+
+enum ApplicationStatus {
+  ADMIN_CREATED
+  DRAFT
+  SUBMITTED
+  UNDER_REVIEW
+  APPROVED
+  CLAIMED
+  ACCEPTED
+  REJECTED
+  DECLINED
+  CANCELLED
+}
+
+enum AttachmentStatus {
+  CONFIRMED
+  ACTIVE
+  COMPLETION_PENDING
+  COMPLETED
+  ENDED_EARLY
+}
+
+enum AttachmentOutcome {
+  SATISFACTORY
+  UNSATISFACTORY
+  INCOMPLETE
+}
+
+enum TerminationInitiator {
+  STUDENT
+  ORGANIZATION
+  UNIVERSITY
+}
+
+enum WeeklyLogStatus {
+  DRAFT
+  SUBMITTED
+  NEEDS_REVISION
+  REVIEWED
+}
+
+enum FinalEvaluationStatus {
+  DRAFT
+  FINALIZED
+}
+
+enum DocumentCategory {
+  APPLICATION_SUPPORTING
+  ATTACHMENT_PERIOD
+}
+
+enum EmailOutboxStatus {
+  PENDING
+  PROCESSING
+  SENT
+  FAILED
+}
+
+// impl.: exact JobRun status vocabulary is an implementation detail (#54/#70
+// define the table's purpose, not its status values).
+enum JobRunStatus {
+  SUCCESS
+  PARTIAL_FAILURE
+  FAILED
+}
+
+// -----------------------------------------------------------------------------
+// 1. IDENTITY & ACCESS  (Decisions #43, #51, #62, #69-71, #73)
+// -----------------------------------------------------------------------------
+
+model User {
+  id           String     @id @default(uuid())
+  email        String     @unique // normalized (lowercased) by the application before write
+  passwordHash String
+  name         String
+  status       UserStatus @default(PENDING_VERIFICATION)
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
+
+  roles                       UserRole[]
+  studentProfile              StudentProfile?
+  universitySupervisorProfile UniversitySupervisorProfile?
+  adminProfile                AdminProfile?
+  organizationSupervisorProfiles OrganizationSupervisorProfile[]
+
+  refreshTokens         RefreshToken[]
+  passwordResetTokens   PasswordResetToken[]
+  emailVerificationTokens EmailVerificationToken[]
+
+  invitationsSent     Invitation[] @relation("InvitationInvitedBy")
+  invitationAccepted  Invitation?  @relation("InvitationAcceptedBy")
+
+  organizationsProposed Organization[] @relation("OrganizationProposedBy")
+  organizationsApproved Organization[] @relation("OrganizationApprovedBy")
+
+  applicationsCreated  AttachmentApplication[] @relation("ApplicationCreatedBy")
+  applicationsReviewed AttachmentApplication[] @relation("ApplicationReviewedBy")
+
+  terminationsInitiated  TerminationRecord[] @relation("TerminationInitiatedBy")
+  terminationsCleared    TerminationRecord[] @relation("TerminationClearanceGrantedBy")
+
+  weeklyLogsReviewed WeeklyLog[] @relation("WeeklyLogReviewedBy")
+  weeklyLogsVerified WeeklyLog[] @relation("WeeklyLogOrgVerifiedBy")
+
+  supervisionVisitsConducted SupervisionVisit[] @relation("VisitConductedBy")
+
+  industryEvaluationsSubmitted IndustryEvaluation[] @relation("IndustryEvalSubmittedBy")
+  finalEvaluationsPerformed    FinalEvaluation[]    @relation("FinalEvalPerformedBy")
+
+  documentVersionsUploaded DocumentVersion[] @relation("DocumentVersionUploadedBy")
+
+  auditLogEntries    AuditLog[]     @relation("AuditActor")
+  notifications      Notification[] @relation("NotificationRecipient")
+  emailOutboxEntries EmailOutbox[]  @relation("EmailOutboxRelatedUser")
+
+  // Seeded, non-deletable row: email 'system@internal', no UserRole rows at
+  // all — structurally incapable of authenticating or being assigned (#69).
+
+  @@map("users")
+}
+
+model UserRole {
+  id     String       @id @default(uuid())
+  userId String
+  role   UserRoleName
+
+  user User @relation(fields: [userId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+
+  @@unique([userId, role])
+  @@map("user_roles")
+}
+
+model StudentProfile {
+  id                 String   @id @default(uuid())
+  userId             String   @unique
+  registrationNumber String   @unique
+  course             String?
+  faculty            String?
+  department         String?
+  yearOfStudy        Int?
+  expectedGraduation DateTime?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+
+  applications      AttachmentApplication[]
+  attachments       Attachment[]
+
+  @@map("student_profiles")
+}
+
+model UniversitySupervisorProfile {
+  id       String  @id @default(uuid())
+  userId   String  @unique
+  staffId  String?
+  title    String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+
+  attachments Attachment[]
+
+  @@map("university_supervisor_profiles")
+}
+
+model OrganizationSupervisorProfile {
+  id             String @id @default(uuid())
+  userId         String
+  organizationId String
+
+  user         User         @relation(fields: [userId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+
+  claimedApplications AttachmentApplication[]
+  attachments         Attachment[]
+
+  @@unique([userId, organizationId]) // #71 — one row per affiliation, no duplicates
+  @@map("organization_supervisor_profiles")
+}
+
+model AdminProfile {
+  id     String @id @default(uuid())
+  userId String @unique
+
+  user User @relation(fields: [userId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+
+  @@map("admin_profiles")
+}
+
+model RefreshToken {
+  id           String    @id @default(uuid())
+  userId       String
+  tokenHash    String    @unique // looked up on every refresh (Decision #75; omitted from #71)
+  issuedAt     DateTime  @default(now())
+  expiresAt    DateTime  // this token's own expiry; never later than sessionExpiresAt (CHECK, constraints.sql)
+  // Absolute session deadline (Decision #77): fixed when the session starts, copied unchanged by every rotation.
+  // "Every token in a chain carries the same value" is a cross-row rule, so it is enforced by the application and
+  // checked by verify-structure.sql — it cannot be a CHECK.
+  sessionExpiresAt DateTime
+  revokedAt    DateTime?
+  replacedById String?   @unique
+
+  user      User          @relation(fields: [userId], references: [id], onDelete: Cascade, onUpdate: NoAction) // #73 exception — ephemeral
+  replacedBy RefreshToken? @relation("TokenRotation", fields: [replacedById], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  replaces   RefreshToken? @relation("TokenRotation")
+
+  @@map("refresh_tokens")
+}
+
+model PasswordResetToken {
+  id        String    @id @default(uuid())
+  userId    String
+  tokenHash String    @unique
+  expiresAt DateTime
+  usedAt    DateTime?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade, onUpdate: NoAction) // #73 exception
+
+  @@map("password_reset_tokens")
+}
+
+model EmailVerificationToken {
+  id        String    @id @default(uuid())
+  userId    String
+  tokenHash String    @unique
+  expiresAt DateTime
+  usedAt    DateTime?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade, onUpdate: NoAction) // #73 exception
+
+  @@map("email_verification_tokens")
+}
+
+model Invitation {
+  id               String       @id @default(uuid())
+  email            String
+  role             UserRoleName
+  organizationId   String?      // non-null iff role = ORGANIZATION_SUPERVISOR — see constraints.sql
+  invitedByUserId  String
+  tokenHash        String       @unique
+  expiresAt        DateTime
+  acceptedByUserId String?      @unique
+
+  organization   Organization? @relation(fields: [organizationId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  invitedBy      User          @relation("InvitationInvitedBy", fields: [invitedByUserId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  acceptedByUser User?         @relation("InvitationAcceptedBy", fields: [acceptedByUserId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+
+  @@map("invitations")
+}
+
+// -----------------------------------------------------------------------------
+// 2. ORGANIZATIONS  (Decisions #3, #62)
+// -----------------------------------------------------------------------------
+
+model Organization {
+  id                String             @id @default(uuid())
+  name              String             // not unique — #71: two real orgs may share a name
+  status            OrganizationStatus @default(PENDING)
+  proposedByUserId  String
+  approvedByUserId  String?
+  createdAt         DateTime           @default(now())
+  updatedAt         DateTime           @updatedAt
+
+  proposedBy User  @relation("OrganizationProposedBy", fields: [proposedByUserId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  approvedBy User? @relation("OrganizationApprovedBy", fields: [approvedByUserId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+
+  supervisorProfiles OrganizationSupervisorProfile[]
+  applications       AttachmentApplication[]
+  attachments        Attachment[]
+  invitations        Invitation[]
+
+  @@map("organizations")
+}
+
+// -----------------------------------------------------------------------------
+// 3. APPLICATIONS  (Decisions #6-11, #34-35, #37-39, #59, #63, #71-73)
+// -----------------------------------------------------------------------------
+
+model AttachmentApplication {
+  id                      String            @id @default(uuid())
+  studentId               String
+  organizationId          String
+  status                  ApplicationStatus @default(DRAFT)
+  createdById             String
+  reviewedById            String?
+  reviewedAt              DateTime?
+  rejectionReason         String?           // CHECK: required iff status = REJECTED — constraints.sql
+  claimedBySupervisorId   String?           // -> OrganizationSupervisorProfile (not User, per #65)
+  claimedAt               DateTime?
+  declineReason           String?           // CHECK: required iff status = DECLINED — constraints.sql
+  studentAcknowledgedAt   DateTime?
+  createdAt               DateTime          @default(now())
+  updatedAt               DateTime          @updatedAt
+
+  student     StudentProfile @relation(fields: [studentId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  organization Organization  @relation(fields: [organizationId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  createdBy   User           @relation("ApplicationCreatedBy", fields: [createdById], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  reviewedBy  User?          @relation("ApplicationReviewedBy", fields: [reviewedById], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  claimedBy   OrganizationSupervisorProfile? @relation(fields: [claimedBySupervisorId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+
+  attachment Attachment?
+  documents  Document[]
+
+  // #71 — partial UNIQUE(studentId) WHERE status IN (unresolved set) lives
+  // in constraints.sql; Prisma cannot express a partial index natively.
+
+  @@map("attachment_applications")
+}
+
+// -----------------------------------------------------------------------------
+// 4. ATTACHMENTS & LIFECYCLE  (Decisions #1, #4-5, #9, #12-16, #36-37, #59-61, #64, #67, #71-73)
+// -----------------------------------------------------------------------------
+
+model Attachment {
+  id                        String            @id @default(uuid())
+  applicationId             String            @unique
+  studentId                 String
+  organizationId            String
+  organizationSupervisorId  String            // required — known at creation via the accepted claim (#9/#64)
+  universitySupervisorId    String?           // nullable — assigned later by Admin (#36/#64)
+  status                    AttachmentStatus  @default(CONFIRMED)
+  outcome                   AttachmentOutcome?
+  startDate                 DateTime
+  endDate                   DateTime
+  reportingPeriodLengthDays Int               // snapshotted from ReportingScheduleConfig at creation (#61)
+  previousAttachmentId      String?           @unique // #71 — linear provenance chain
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  application             AttachmentApplication          @relation(fields: [applicationId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  student                  StudentProfile                 @relation(fields: [studentId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  organization              Organization                   @relation(fields: [organizationId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  organizationSupervisor    OrganizationSupervisorProfile   @relation(fields: [organizationSupervisorId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  universitySupervisor      UniversitySupervisorProfile?    @relation(fields: [universitySupervisorId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  previousAttachment        Attachment?                     @relation("AttachmentProvenance", fields: [previousAttachmentId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  nextAttachment             Attachment?                     @relation("AttachmentProvenance")
+
+  terminationRecord TerminationRecord?
+  weeklyLogs        WeeklyLog[]
+  supervisionVisits SupervisionVisit[]
+  industryEvaluation IndustryEvaluation?
+  finalEvaluations  FinalEvaluation[]
+  documents         Document[]
+
+  // #72 — CHECK(endDate >= startDate), CHECK(reportingPeriodLengthDays > 0),
+  // CHECK(outcome IS NULL OR status IN (COMPLETED, ENDED_EARLY)) — constraints.sql.
+  // NOTE: no CHECK ties status to universitySupervisorId — deliberately a
+  // service-layer precondition only (#36/#72 amendment), not a DB constraint.
+
+  @@map("attachments")
+}
+
+model TerminationReasonCategory {
+  id                                     String  @id @default(uuid())
+  code                                   String  @unique
+  name                                   String
+  requiresAdminClearanceForReapplication Boolean @default(false)
+  isActive                               Boolean @default(true)
+
+  terminationRecords TerminationRecord[]
+
+  @@map("termination_reason_categories")
+}
+
+model TerminationRecord {
+  id                         String                @id @default(uuid())
+  attachmentId               String                @unique
+  reasonCategoryId           String
+  initiatedByUserId          String
+  initiatedByType             TerminationInitiator  // denormalized snapshot — #64
+  reasonDescription          String
+  terminatedAt               DateTime              @default(now())
+  clearanceGrantedAt         DateTime?
+  clearanceGrantedByAdminId  String?
+
+  attachment              Attachment                 @relation(fields: [attachmentId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  reasonCategory           TerminationReasonCategory  @relation(fields: [reasonCategoryId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  initiatedBy             User                       @relation("TerminationInitiatedBy", fields: [initiatedByUserId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  clearanceGrantedByAdmin User?                      @relation("TerminationClearanceGrantedBy", fields: [clearanceGrantedByAdminId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+
+  // #72 — CHECK: (clearanceGrantedAt IS NULL) = (clearanceGrantedByAdminId IS NULL)
+
+  @@map("termination_records")
+}
+
+// -----------------------------------------------------------------------------
+// 5. WEEKLY REPORTING  (Decisions #17-21, #40, #61, #65, #71-72)
+// -----------------------------------------------------------------------------
+
+// Singleton table — see constraints.sql for the fixed-id=1 CHECK (#61/#72).
+model ReportingScheduleConfig {
+  id               Int      @id @default(1)
+  periodLengthDays Int      @default(7) // provisional, Admin-editable (#17/#40)
+  updatedAt        DateTime @updatedAt
+
+  @@map("reporting_schedule_config")
+}
+
+model WeeklyLog {
+  id               String          @id @default(uuid())
+  attachmentId     String
+  periodNumber     Int             // CHECK >= 1 — constraints.sql
+  activities       String          // required (#20)
+  skillsLearned    String?
+  challenges       String?
+  reflection       String?
+  status           WeeklyLogStatus @default(DRAFT)
+  reviewedById     String?         // -> User, not profile (#65)
+  revisionComment  String?         // CHECK: required iff status = NEEDS_REVISION
+  orgVerifiedAt    DateTime?
+  orgVerifiedBy    String?         // -> User, not profile (#65)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  attachment      Attachment @relation(fields: [attachmentId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  reviewedByUser  User?      @relation("WeeklyLogReviewedBy", fields: [reviewedById], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  orgVerifiedByUser User?    @relation("WeeklyLogOrgVerifiedBy", fields: [orgVerifiedBy], references: [id], onDelete: Restrict, onUpdate: NoAction)
+
+  versions WeeklyLogVersion[]
+
+  @@unique([attachmentId, periodNumber])
+  @@map("weekly_logs")
+}
+
+model WeeklyLogVersion {
+  id            String   @id @default(uuid())
+  weeklyLogId   String
+  versionNumber Int
+  activities    String
+  skillsLearned String?
+  challenges    String?
+  reflection    String?
+  savedAt       DateTime @default(now())
+
+  weeklyLog WeeklyLog @relation(fields: [weeklyLogId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+
+  @@unique([weeklyLogId, versionNumber])
+  @@map("weekly_log_versions")
+}
+
+// -----------------------------------------------------------------------------
+// 6. SUPERVISION  (Decisions #22-24, #65-66)
+// -----------------------------------------------------------------------------
+
+model SupervisionVisit {
+  id                      String    @id @default(uuid())
+  attachmentId            String
+  universitySupervisorId  String    // -> User, not profile — corrected in #66
+  visitDate               DateTime
+  visitType               String?
+  summary                 String
+  observations            String
+  recommendations         String
+  studentAcknowledgedAt   DateTime?
+  studentComment          String?
+
+  createdAt DateTime @default(now())
+
+  attachment            Attachment @relation(fields: [attachmentId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  universitySupervisorUser User     @relation("VisitConductedBy", fields: [universitySupervisorId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+
+  @@map("supervision_visits")
+}
+
+// -----------------------------------------------------------------------------
+// 7. EVALUATIONS  (Decisions #25-29, #41, #67, #71-72)
+// -----------------------------------------------------------------------------
+
+model EvaluationCriterion {
+  id        String  @id @default(uuid())
+  name      String  // NOT unique — #71 amendment, criteria are renameable/configurable
+  weight    Decimal @db.Decimal(5, 2) // CHECK (weight > 0 AND weight <= 100) — constraints.sql
+  isActive  Boolean @default(true)
+  sortOrder Int     @default(0)
+
+  industryRatings IndustryEvaluationRating[]
+  finalRatings    FinalEvaluationRating[]
+
+  // Weights-sum-to-100 across the active set is APPLICATION-LAYER ONLY (#72)
+  // — not expressible as a row-level CHECK. Enforced by the admin config
+  // service against the complete resulting active set in one transaction.
+
+  @@map("evaluation_criteria")
+}
+
+model IndustryEvaluation {
+  id                  String   @id @default(uuid())
+  attachmentId        String   @unique // one per attachment (#27)
+  submittedByUserId   String   // -> User, not profile (#67)
+  isLocked            Boolean  @default(false)
+  lockedAt            DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  attachment   Attachment @relation(fields: [attachmentId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  submittedBy  User       @relation("IndustryEvalSubmittedBy", fields: [submittedByUserId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+
+  ratings  IndustryEvaluationRating[]
+  versions IndustryEvaluationVersion[]
+
+  @@map("industry_evaluations")
+}
+
+model IndustryEvaluationRating {
+  id                   String @id @default(uuid())
+  industryEvaluationId String
+  criterionId          String
+  rating               Int    // CHECK (rating BETWEEN 0 AND 100) — constraints.sql
+  comment              String?
+
+  industryEvaluation IndustryEvaluation  @relation(fields: [industryEvaluationId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  criterion          EvaluationCriterion @relation(fields: [criterionId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+
+  @@unique([industryEvaluationId, criterionId])
+  @@map("industry_evaluation_ratings")
+}
+
+model IndustryEvaluationVersion {
+  id                   String   @id @default(uuid())
+  industryEvaluationId String
+  versionNumber        Int
+  snapshot             Json     // ratings + comments at this version
+  savedAt              DateTime @default(now())
+
+  industryEvaluation IndustryEvaluation @relation(fields: [industryEvaluationId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  usedByFinalEvaluations FinalEvaluation[]
+
+  @@unique([industryEvaluationId, versionNumber])
+  @@map("industry_evaluation_versions")
+}
+
+model FinalEvaluation {
+  id                              String                 @id @default(uuid())
+  attachmentId                    String                 // 1:N — corrected in #67, NOT unique alone
+  universitySupervisorId          String                 // -> User, not profile — critical per #67
+  status                          FinalEvaluationStatus  @default(DRAFT)
+  overallScore                    Decimal?               @db.Decimal(5, 2) // CHECK 0-100 — constraints.sql
+  outcome                         AttachmentOutcome?
+  finalizedAt                     DateTime?
+  supersededAt                    DateTime?
+  supersededByFinalEvaluationId   String?                @unique
+  industryEvaluationVersionIdUsed String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  attachment              Attachment                  @relation(fields: [attachmentId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  universitySupervisorUser User                        @relation("FinalEvalPerformedBy", fields: [universitySupervisorId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  supersededBy             FinalEvaluation?             @relation("EvaluationSupersession", fields: [supersededByFinalEvaluationId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  supersedes               FinalEvaluation?             @relation("EvaluationSupersession")
+  industryEvaluationVersionUsed IndustryEvaluationVersion? @relation(fields: [industryEvaluationVersionIdUsed], references: [id], onDelete: Restrict, onUpdate: NoAction)
+
+  ratings FinalEvaluationRating[]
+
+  // #71 — partial UNIQUE(attachmentId) WHERE supersededAt IS NULL lives in
+  // constraints.sql (Option A — "current" evaluation found via this index,
+  // no Attachment.currentFinalEvaluationId pointer, per #67).
+
+  @@map("final_evaluations")
+}
+
+model FinalEvaluationRating {
+  id                String @id @default(uuid())
+  finalEvaluationId String
+  criterionId       String
+  rating            Int    // CHECK (rating BETWEEN 0 AND 100) — constraints.sql
+  comment           String?
+
+  finalEvaluation FinalEvaluation     @relation(fields: [finalEvaluationId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  criterion       EvaluationCriterion @relation(fields: [criterionId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+
+  @@unique([finalEvaluationId, criterionId])
+  @@map("final_evaluation_ratings")
+}
+
+// -----------------------------------------------------------------------------
+// 8. DOCUMENTS  (Decisions #32, #58, #68, #71-72)
+// -----------------------------------------------------------------------------
+
+model DocumentTypeConfig {
+  id         String           @id @default(uuid())
+  category   DocumentCategory
+  code       String
+  name       String
+  isRequired Boolean          @default(false)
+  isActive   Boolean          @default(true)
+
+  documents Document[]
+
+  @@unique([category, code])
+  @@map("document_type_configs")
+}
+
+model Document {
+  id                       String  @id @default(uuid())
+  attachmentApplicationId  String?
+  attachmentId             String?
+  documentTypeId           String
+
+  createdAt DateTime @default(now())
+
+  attachmentApplication AttachmentApplication? @relation(fields: [attachmentApplicationId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  attachment             Attachment?             @relation(fields: [attachmentId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  documentType           DocumentTypeConfig      @relation(fields: [documentTypeId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+
+  versions DocumentVersion[]
+
+  // #72 — CHECK (num_nonnulls(attachmentApplicationId, attachmentId) = 1)
+  // replaces the old polymorphic ownerType/ownerId design (#58/#68).
+
+  @@map("documents")
+}
+
+model DocumentVersion {
+  id               String  @id @default(uuid())
+  documentId       String
+  versionNumber    Int
+  storageKey       String  @unique
+  originalFilename String
+  mimeType         String  // determined by byte-sniffing, never trusted client Content-Type
+  sizeBytes        BigInt  // CHECK > 0 — constraints.sql
+  sha256           String
+  uploadedByUserId String
+  uploadedAt       DateTime @default(now())
+  isCurrent        Boolean  @default(true)
+
+  document     Document @relation(fields: [documentId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  uploadedBy   User     @relation("DocumentVersionUploadedBy", fields: [uploadedByUserId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+
+  // #71 — partial UNIQUE(documentId) WHERE isCurrent = true lives in
+  // constraints.sql.
+
+  @@unique([documentId, versionNumber])
+  @@map("document_versions")
+}
+
+// -----------------------------------------------------------------------------
+// 9. AUDIT, NOTIFICATIONS & OUTBOX  (Decisions #30, #33, #42, #52, #55, #69, #71-73)
+// -----------------------------------------------------------------------------
+
+model AuditLog {
+  id           String   @id @default(uuid())
+  actorUserId  String   // required, never null — SYSTEM sentinel for automated actions (#69)
+  action       String
+  targetType   String   // polymorphic — no FK (#69), see field comment in data-model.md §9
+  targetId     String
+  metadata     Json?
+  occurredAt   DateTime @default(now())
+
+  actor User @relation("AuditActor", fields: [actorUserId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+
+  @@index([targetType, targetId]) // app-level lookup support, not a referential constraint
+  @@map("audit_logs")
+}
+
+model Notification {
+  id                String    @id @default(uuid())
+  recipientUserId   String
+  type              String
+  title             String
+  message           String
+  relatedEntityType String?
+  relatedEntityId   String?
+  readAt            DateTime? // timestamp, not boolean (#30)
+
+  createdAt DateTime @default(now())
+
+  recipient User @relation("NotificationRecipient", fields: [recipientUserId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+
+  @@map("notifications")
+}
+
+model EmailOutbox {
+  id             String            @id @default(uuid())
+  toEmail        String
+  relatedUserId  String?
+  templateType   String
+  payload        Json
+  status         EmailOutboxStatus @default(PENDING)
+  attempts       Int               @default(0) // CHECK >= 0 — constraints.sql
+  nextAttemptAt  DateTime?
+  sentAt         DateTime?         // CHECK: required iff status = SENT — constraints.sql
+  idempotencyKey String            @unique // required, not nullable — #71
+
+  createdAt DateTime @default(now())
+
+  relatedUser User? @relation("EmailOutboxRelatedUser", fields: [relatedUserId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+
+  @@map("email_outbox")
+}
+
+// -----------------------------------------------------------------------------
+// 10. OPERATIONAL INFRASTRUCTURE  (Decisions #54, #70)
+// -----------------------------------------------------------------------------
+
+model JobRun {
+  id             String       @id @default(uuid())
+  jobName        String
+  startedAt      DateTime
+  finishedAt     DateTime?
+  itemsProcessed Int          @default(0)
+  itemsFailed    Int          @default(0)
+  status         JobRunStatus
+
+  // No FK relationships at all — pure aggregate telemetry (#54/#70). Which
+  // specific rows a job touched is recoverable from AuditLog (actorUserId =
+  // SYSTEM), not duplicated here.
+
+  @@map("job_runs")
+}
