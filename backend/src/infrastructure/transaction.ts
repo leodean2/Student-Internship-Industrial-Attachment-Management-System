@@ -5,9 +5,14 @@ export type Tx = Prisma.TransactionClient;
 
 /** Services own the transaction: they receive a runner and open exactly one per use case. */
 export type TxRunner = <T>(fn: (tx: Tx) => Promise<T>) => Promise<T>;
+export type TxOptions = {
+  maxWait?: number;
+  timeout?: number;
+  isolationLevel?: Prisma.TransactionIsolationLevel;
+};
 
 /** READ COMMITTED (PostgreSQL default) + conditional writes is the baseline (#52). */
 export const prismaTxRunner =
-  (db: PrismaClient): TxRunner =>
+  (db: PrismaClient, options?: TxOptions): TxRunner =>
   (fn) =>
-    db.$transaction(fn);
+    db.$transaction(fn, options);

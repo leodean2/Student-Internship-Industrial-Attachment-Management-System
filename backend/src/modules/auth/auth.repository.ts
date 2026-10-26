@@ -1,4 +1,4 @@
-import type { PrismaClient, UserRoleName, UserStatus } from "@prisma/client";
+import type { Prisma, PrismaClient, UserRoleName, UserStatus } from "@prisma/client";
 
 /** Plain data the ActorContext is built from. Kept independent of Prisma's types so services are testable with fakes. */
 export interface ActorRecord {
@@ -13,14 +13,14 @@ export interface ActorRecord {
 
 export interface AuthRepository {
   /** Returns null when no such user exists. Contains NO authorization decisions (#50). */
-  findActorRecordById(userId: string): Promise<ActorRecord | null>;
+  findActorRecordById(userId: string, tx?: Prisma.TransactionClient): Promise<ActorRecord | null>;
 }
 
 export class PrismaAuthRepository implements AuthRepository {
   constructor(private readonly db: PrismaClient) {}
 
-  async findActorRecordById(userId: string): Promise<ActorRecord | null> {
-    const user = await this.db.user.findUnique({
+  async findActorRecordById(userId: string, tx?: Prisma.TransactionClient): Promise<ActorRecord | null> {
+    const user = await (tx ?? this.db).user.findUnique({
       where: { id: userId },
       select: {
         id: true,

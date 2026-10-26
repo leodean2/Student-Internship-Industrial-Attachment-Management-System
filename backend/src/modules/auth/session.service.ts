@@ -105,7 +105,7 @@ export class SessionService {
 
         // A deactivated / unverified / role-less account must not mint new access tokens (#51).
         // Throws ACCOUNT_INACTIVE or UNAUTHENTICATED; nothing has been written yet, so nothing to undo.
-        await actors.load(row.userId);
+        await actors.load(row.userId, tx);
 
         const next = mint();
         const expiresAt = earliest(addSeconds(now, config.refreshTtlSeconds), row.sessionExpiresAt);

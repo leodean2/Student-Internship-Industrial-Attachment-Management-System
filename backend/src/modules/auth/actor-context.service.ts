@@ -1,4 +1,5 @@
 import { Errors } from "../../shared/errors";
+import type { Tx } from "../../infrastructure/transaction";
 import type { ActorContext } from "./actor-context";
 import type { AuthRepository } from "./auth.repository";
 
@@ -15,8 +16,8 @@ export class ActorContextService {
    *                               rejects the seeded SYSTEM sentinel structurally (#69) without
    *                               hard-coding its id, and without revealing that it exists.
    */
-  async load(userId: string): Promise<ActorContext> {
-    const record = await this.repo.findActorRecordById(userId);
+  async load(userId: string, tx?: Tx): Promise<ActorContext> {
+    const record = await this.repo.findActorRecordById(userId, tx);
     if (!record) throw Errors.unauthenticated();
     if (record.status !== "ACTIVE") throw Errors.accountInactive();
     if (record.roles.length === 0) throw Errors.unauthenticated();

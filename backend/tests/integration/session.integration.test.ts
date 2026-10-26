@@ -25,9 +25,8 @@ describe.skipIf(!url)("refresh-token sessions against PostgreSQL (Decisions #51/
   const run = randomUUID().slice(0, 8);
   const uid = (n: string) => `st-${run}-${n}`;
   const prisma = new PrismaClient({
-    adapter: new PrismaPg({ connectionString: url! }),
-    // Remote Neon round trips exceed Prisma's default transaction timeout in concurrency tests.
-    transactionOptions: { timeout: 30_000 },
+    // A two-connection pool catches refreshes that need a second connection while holding a transaction.
+    adapter: new PrismaPg({ connectionString: url!, max: 2 }),
   });
   const logger = createLogger("silent");
   const build = (repo = new PrismaRefreshTokenRepository(), config = DEFAULT_SESSION_CONFIG) =>
@@ -35,7 +34,7 @@ describe.skipIf(!url)("refresh-token sessions against PostgreSQL (Decisions #51/
       repo,
       actors: new ActorContextService(new PrismaAuthRepository(prisma)),
       tokens: createTokenService("integration-secret-integration-secret-1234567"),
-      runTx: prismaTxRunner(prisma),
+      runTx: prismaTxRunner(prisma, { timeout: 30_000 }),
       config,
       logger,
     });
@@ -93,7 +92,8 @@ describe.skipIf(!url)("refresh-token sessions against PostgreSQL (Decisions #51/
     await svc.refresh(token);
     const [dRow] = await prisma.$queryRaw<{ delta: number }[]>`
       SELECT abs(extract(epoch FROM (now() AT TIME ZONE 'UTC') - max("revokedAt")))::float AS delta FROM refresh_tokens WHERE "userId" = ${uid("i")}`;
-    expect(dRow!.delta).toBeLessThan(5);
+    // The verification query may arrive several seconds after the remote Neon transaction commits.
+    expect(dRow!.delta).toBeLessThan(30);
   });
 
   it("CONCURRENCY: parallel refreshes of one token — exactly one wins, the rest get 409, no orphan tokens", async () => {
