@@ -133,9 +133,10 @@ SELECT t('#61/#72 singleton: second config row (id=2) rejected', $$INSERT INTO r
 SELECT t('#61/#72 singleton: duplicate id=1 rejected', $$INSERT INTO reporting_schedule_config(id,"periodLengthDays","updatedAt") VALUES (1,14,now())$$,'23505');
 
 -- ---------- referential actions (#73) ----------
-SELECT t('#73 RESTRICT: deleting a User that owns a StudentProfile fails', $$DELETE FROM users WHERE id='u_student'$$,'23503');
-SELECT t('#73 RESTRICT: deleting an Attachment that has weekly logs fails', $$DELETE FROM attachments WHERE id='A1'$$,'23503');
-SELECT t('#73 RESTRICT: deleting a Document with versions fails', $$DELETE FROM documents WHERE id='d1'$$,'23503');
+-- PostgreSQL reports SQLSTATE 23001 for RESTRICT; NO ACTION reports 23503.
+SELECT t('#73 RESTRICT: deleting a User that owns a StudentProfile fails', $$DELETE FROM users WHERE id='u_student'$$,'23001');
+SELECT t('#73 RESTRICT: deleting an Attachment that has weekly logs fails', $$DELETE FROM attachments WHERE id='A1'$$,'23001');
+SELECT t('#73 RESTRICT: deleting a Document with versions fails', $$DELETE FROM documents WHERE id='d1'$$,'23001');
 SELECT t('#73 fixture: user with only tokens', $$INSERT INTO users(id,email,"passwordHash",name,"updatedAt") VALUES ('u_tok','tok@x.com','h','Tok',now()); INSERT INTO refresh_tokens(id,"userId","tokenHash","expiresAt","sessionExpiresAt") VALUES ('rt_t','u_tok','ht',now(),now()); INSERT INTO password_reset_tokens(id,"userId","tokenHash","expiresAt") VALUES ('prt_t','u_tok','hp',now()); INSERT INTO email_verification_tokens(id,"userId","tokenHash","expiresAt") VALUES ('evt_t','u_tok','hv',now())$$,'ok');
 SELECT t('#73 CASCADE: deleting that User succeeds', $$DELETE FROM users WHERE id='u_tok'$$,'ok');
 SELECT t('#73 CASCADE: its 3 token rows are gone', $$SELECT 1/(CASE WHEN (SELECT count(*) FROM refresh_tokens WHERE id='rt_t')+(SELECT count(*) FROM password_reset_tokens WHERE id='prt_t')+(SELECT count(*) FROM email_verification_tokens WHERE id='evt_t')=0 THEN 1 ELSE 0 END)$$,'ok');

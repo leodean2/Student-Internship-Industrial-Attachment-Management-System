@@ -1,0 +1,26 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"label": "Inspect Git worktree",
+			"type": "shell",
+			"command": "Set-Location 'C:\\Users\\user\\Student Internship and Industrial Attachment Management System'; $candidates = @('C:\\Program Files\\Git\\cmd\\git.exe','C:\\Program Files\\Git\\bin\\git.exe',($env:LOCALAPPDATA + '\\Programs\\Git\\cmd\\git.exe')); $git = Get-Command git.exe -ErrorAction SilentlyContinue; if ($git) { $exe = $git.Source } else { $exe = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1 }; if (-not $exe) { Write-Output 'GIT_NOT_FOUND'; exit 1 }; & $exe status --short --branch; & $exe branch --show-current; & $exe diff --stat; & $exe diff --cached --stat; & $exe remote -v",
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "Search common Git install locations",
+			"type": "shell",
+			"command": "$roots = @('C:\\Program Files\\Git','C:\\Program Files (x86)\\Git',($env:LOCALAPPDATA + '\\Programs\\Git'),($env:USERPROFILE + '\\scoop\\apps\\git'),($env:ChocolateyInstall + '\\bin')); foreach ($root in $roots) { if ($root -and (Test-Path $root)) { Get-ChildItem -Path $root -Filter git.exe -File -Recurse -ErrorAction SilentlyContinue | Select-Object -First 5 -ExpandProperty FullName } }",
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "Install Git for requested push",
+			"type": "shell",
+			"command": "$winget = Get-Command winget.exe -ErrorAction SilentlyContinue; if (-not $winget) { Write-Output 'WINGET_NOT_FOUND'; exit 1 }; winget install --id Git.Git --exact --silent --accept-package-agreements --accept-source-agreements",
+			"isBackground": false,
+			"problemMatcher": []
+		}
+	]
+}

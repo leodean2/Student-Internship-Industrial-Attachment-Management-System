@@ -24,15 +24,19 @@ const USERS = ["a", "b", "c", "d", "e", "f", "g", "h", "i", "inactive"];
 describe.skipIf(!url)("refresh-token sessions against PostgreSQL (Decisions #51/#52/#55/#75-#77)", () => {
   const run = randomUUID().slice(0, 8);
   const uid = (n: string) => `st-${run}-${n}`;
-  const prisma = new PrismaClient({ adapter: new PrismaPg({ connectionString: url! }) });
+  const prisma = new PrismaClient({
+    adapter: new PrismaPg({ connectionString: url! }),
+    // Remote Neon round trips exceed Prisma's default transaction timeout in concurrency tests.
+    transactionOptions: { timeout: 30_000 },
+  });
   const logger = createLogger("silent");
-  const build = (repo = new PrismaRefreshTokenRepository()) =>
+  const build = (repo = new PrismaRefreshTokenRepository(), config = DEFAULT_SESSION_CONFIG) =>
     new SessionService({
       repo,
       actors: new ActorContextService(new PrismaAuthRepository(prisma)),
       tokens: createTokenService("integration-secret-integration-secret-1234567"),
       runTx: prismaTxRunner(prisma),
-      config: DEFAULT_SESSION_CONFIG,
+      config,
       logger,
     });
   const svc = build();
@@ -102,6 +106,17 @@ describe.skipIf(!url)("refresh-token sessions against PostgreSQL (Decisions #51/
       const won = results.filter((r) => r.status === "fulfilled");
       const lost = results.filter((r): r is PromiseRejectedResult => r.status === "rejected");
 
+      console.error(results.map((r) =>
+        r.status === "rejected"
+          ? {
+              status: r.status,
+              name: r.reason?.name,
+              code: r.reason?.code,
+              appStatus: r.reason?.status,
+              message: r.reason?.message,
+            }
+          : { status: r.status },
+      ));
       expect(won, `round ${round}: exactly one request may rotate the token`).toHaveLength(1);
       expect(lost).toHaveLength(7);
       for (const l of lost) expect(l.reason).toMatchObject({ status: 409, code: "CONFLICT" });
@@ -112,9 +127,13 @@ describe.skipIf(!url)("refresh-token sessions against PostgreSQL (Decisions #51/
 
   it("the old token can never succeed again: every sequential replay inside the window is a 409 and creates nothing", async () => {
     const userId = uid("g");
+    const replaySvc = build(new PrismaRefreshTokenRepository(), {
+      ...DEFAULT_SESSION_CONFIG,
+      reuseGraceSeconds: 120,
+    });
     const { token } = await svc.startSession(userId);
-    await svc.refresh(token);
-    for (let i = 0; i < 10; i++) expect(await errOf(svc.refresh(token))).toMatchObject({ status: 409 });
+    await replaySvc.refresh(token);
+    for (let i = 0; i < 10; i++) expect(await errOf(replaySvc.refresh(token))).toMatchObject({ status: 409 });
     expect(await rowsFor(userId)).toHaveLength(2);
     expect(await activeFor(userId)).toHaveLength(1);
   });
