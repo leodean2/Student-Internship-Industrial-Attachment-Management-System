@@ -106,17 +106,6 @@ describe.skipIf(!url)("refresh-token sessions against PostgreSQL (Decisions #51/
       const won = results.filter((r) => r.status === "fulfilled");
       const lost = results.filter((r): r is PromiseRejectedResult => r.status === "rejected");
 
-      console.error(results.map((r) =>
-        r.status === "rejected"
-          ? {
-              status: r.status,
-              name: r.reason?.name,
-              code: r.reason?.code,
-              appStatus: r.reason?.status,
-              message: r.reason?.message,
-            }
-          : { status: r.status },
-      ));
       expect(won, `round ${round}: exactly one request may rotate the token`).toHaveLength(1);
       expect(lost).toHaveLength(7);
       for (const l of lost) expect(l.reason).toMatchObject({ status: 409, code: "CONFLICT" });

@@ -12,6 +12,8 @@ const schema = z.object({
     .refine((v) => !v.split(",").some((o) => o.trim() === "*"), "CORS_ORIGIN must list explicit origins, never '*'"),
   REFRESH_COOKIE_SAMESITE: z.enum(["strict", "lax", "none"]).default("strict"),
   LOG_LEVEL: z.enum(["fatal", "error", "warn", "info", "debug", "trace", "silent"]).default("info"),
+  // Number of reverse proxies in front of the API (Render: 1). Too high lets clients spoof their IP and dodge login throttling.
+  TRUST_PROXY_HOPS: z.coerce.number().int().min(0).max(5).default(0),
 });
 
 export type Env = z.infer<typeof schema>;

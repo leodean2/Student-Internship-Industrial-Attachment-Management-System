@@ -14,11 +14,14 @@ foundation from #50/#55, and **refresh-token sessions** (rotation, reuse detecti
 | Role guard | `requireRole(...roles)` — coarse, any-of, 403 on mismatch |
 | Probe route | `GET /api/v1/auth/me` returns exactly the `ActorContext` the rest of the system will see |
 | Refresh sessions | `POST /api/v1/auth/refresh` (rotating, single-use, concurrency-safe) and `POST /api/v1/auth/logout`; `SessionService.startSession` / `revokeAllSessions` primitives for later flows |
+| Login | `POST /api/v1/auth/login`; bcrypt verification, indistinguishable credential failures, and in-memory IP/email throttling |
 | Config | Zod-validated environment, fails fast, never echoes values |
 
-**Deliberately not built yet:** login (nothing issues the first refresh token yet — tests use `startSession` directly),
-registration, invitations, password reset, account deactivation, any role-specific business route, any
-application/attachment policy, the worker process, email.
+Login limits failed attempts to 10 per IP/email pair and 50 per IP in a 15-minute window. The throttle is in-memory
+and resets on process restart; it is not shared across API instances.
+
+**Deliberately not built yet:** registration, invitations, password reset, account deactivation, any role-specific
+business route, any application/attachment policy, the worker process, email.
 
 ## Request flow
 
@@ -72,7 +75,7 @@ The `Origin` check applies identically to `/refresh` and `/logout`. **Browser-le
 
 ## Setup
 
-Requires Node ≥ 20 and PostgreSQL.
+Requires Node ≥ 22.12 and PostgreSQL.
 
 ```bash
 npm install
@@ -94,13 +97,23 @@ npm run dev                       # http://localhost:4000/api/v1/health
 ## Tests
 
 ```bash
-npm test                          # 98 unit/HTTP tests, no database needed
-TEST_DATABASE_URL=postgresql://... npm run test:integration   # 25 tests against a DISPOSABLE database (parallel-refresh races, atomic rollback, session cap)
+npm test                          # 141 unit/HTTP tests, no database needed
+TEST_DATABASE_URL=postgresql://... npm run test:integration   # 30 tests against a DISPOSABLE database (login, parallel-refresh races, atomic rollback, session cap)
 ```
 
 Integration tests need a database that already has the baseline migration **and** `prisma/constraints.sql` applied
 (the latter seeds the `SYSTEM` user they assert on). They create and remove their own fixture rows.
 `prisma/verification/verify-structure.sql` and `verify-behaviour.sql` check the schema itself (run behaviour only on a scratch DB).
+
+## Render deployment
+
+For a Render service whose root directory is `backend`, use this Build Command:
+
+```bash
+npm ci && npx prisma generate && npm run build
+```
+
+Set the Start Command to `npm start`. The explicit Prisma generation step ensures the client is generated during deployment.
 
 ## Verification status — read this
 

@@ -5,7 +5,7 @@
   "description": "Student Internship & Industrial Attachment Management System — API and worker (modular monolith, Decision #49)",
   "main": "dist/server.js",
   "engines": {
-    "node": ">=20"
+    "node": ">=22.12"
   },
   "scripts": {
     "dev": "tsx watch src/server.ts",
@@ -22,6 +22,7 @@
     "@neon/env": "^1.6.2",
     "@prisma/adapter-pg": "~6.19.3",
     "@prisma/client": "~6.19.3",
+    "bcrypt": "^6.0.0",
     "cookie": "^0.7.2",
     "cors": "^2.8.6",
     "dotenv": "^18.0.7",
@@ -33,11 +34,12 @@
     "zod": "^4.6.6"
   },
   "devDependencies": {
+    "@types/bcrypt": "^5.0.2",
     "@types/cookie": "^0.6.0",
     "@types/cors": "^2.8.19",
     "@types/express": "^5.0.6",
     "@types/jsonwebtoken": "^9.0.10",
-    "@types/node": "^26.6.5",
+    "@types/node": "^24.19.2",
     "@types/pg": "^8.23.1",
     "@types/supertest": "^7.2.1",
     "prisma": "~6.19.3",
@@ -45,5 +47,12 @@
     "tsx": "^4.23.15",
     "typescript": "~5.9",
     "vitest": "^5.0.3"
+  },
+  "allowScripts": {
+    "@prisma/client@6.19.3": true,
+    "@prisma/engines@6.19.3": true,
+    "prisma@6.19.3": true,
+    "esbuild@0.28.2": true,
+    "bcrypt@6.0.0": true
   }
 }

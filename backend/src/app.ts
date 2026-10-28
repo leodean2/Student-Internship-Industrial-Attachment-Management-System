@@ -5,6 +5,8 @@ import type { Logger } from "./infrastructure/logger";
 import { createAuthenticate } from "./modules/auth/auth.middleware";
 import { createAuthRouter } from "./modules/auth/auth.routes";
 import type { ActorContextService } from "./modules/auth/actor-context.service";
+import { createLoginRouter } from "./modules/auth/login.routes";
+import type { LoginService } from "./modules/auth/login.service";
 import { createSessionRouter } from "./modules/auth/session.routes";
 import type { CookieConfig } from "./modules/auth/session.config";
 import type { SessionService } from "./modules/auth/session.service";
@@ -20,6 +22,10 @@ export interface AppDeps {
   actors: ActorContextService;
   sessions: SessionService;
   cookie: CookieConfig;
+  /** Always passed by server.ts. Optional so HTTP tests that never log in need no change. */
+  login?: LoginService;
+  /** Reverse proxies in front of the API (Render: 1). 0 = ignore X-Forwarded-For. See TRUST_PROXY_HOPS. */
+  trustProxyHops?: number;
 }
 
 /**
@@ -29,6 +35,7 @@ export interface AppDeps {
 export function createApp(deps: AppDeps): Express {
   const app = express();
   app.disable("x-powered-by");
+  app.set("trust proxy", deps.trustProxyHops ?? 0);
 
   app.use(requestContext(deps.logger));
   app.use(requestLogger());
@@ -49,6 +56,9 @@ export function createApp(deps: AppDeps): Express {
   });
   api.use("/auth", createAuthRouter(authenticate));
   api.use("/auth", createSessionRouter({ sessions: deps.sessions, cookie: deps.cookie, corsOrigins: deps.corsOrigins }));
+  if (deps.login) {
+    api.use("/auth", createLoginRouter({ login: deps.login, cookie: deps.cookie, corsOrigins: deps.corsOrigins }));
+  }
   app.use("/api/v1", api); // #55: version prefix only, no versioning scheme
 
   app.use(notFoundHandler);

@@ -1,4 +1,5 @@
-import "dotenv/config";
+import { config } from "dotenv";
+config();
 import { PrismaPg } from "@prisma/adapter-pg";
 import { createApp } from "./app";
 import { loadEnv, parseCorsOrigins } from "./config/env";
@@ -6,6 +7,10 @@ import { createLogger } from "./infrastructure/logger";
 import { createPrismaClient } from "./infrastructure/prisma";
 import { ActorContextService } from "./modules/auth/actor-context.service";
 import { PrismaAuthRepository } from "./modules/auth/auth.repository";
+import { PrismaCredentialsRepository } from "./modules/auth/credentials.repository";
+import { LoginThrottle } from "./modules/auth/login-throttle";
+import { LoginService } from "./modules/auth/login.service";
+import { getDummyHash, verifyPassword } from "./modules/auth/password";
 import { PrismaRefreshTokenRepository } from "./modules/auth/refresh-token.repository";
 import { DEFAULT_SESSION_CONFIG, type CookieConfig } from "./modules/auth/session.config";
 import { SessionService } from "./modules/auth/session.service";
@@ -35,6 +40,18 @@ const sessions = new SessionService({
   logger,
 });
 
+const login = new LoginService({
+  credentials: new PrismaCredentialsRepository(prisma),
+  actors,
+  sessions,
+  tokens,
+  throttle: new LoginThrottle(),
+  passwords: { verify: verifyPassword, dummyHash: getDummyHash },
+  refreshTtlSeconds: DEFAULT_SESSION_CONFIG.refreshTtlSeconds,
+  logger,
+});
+void getDummyHash().catch((err) => logger.error({ err }, "could not prepare the dummy password hash"));
+
 const app = createApp({
   logger,
   corsOrigins: parseCorsOrigins(env.CORS_ORIGIN),
@@ -42,6 +59,8 @@ const app = createApp({
   actors,
   sessions,
   cookie,
+  login,
+  trustProxyHops: env.TRUST_PROXY_HOPS,
 });
 
 const server = app.listen(env.PORT, () => {

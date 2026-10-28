@@ -47,6 +47,9 @@ export const errorHandler: ErrorRequestHandler = (err, req, res, _next) => {
   }
 
   res.locals.errorCode = code; // read by the request logger
+  if (err instanceof AppError && err.retryAfterSeconds !== undefined) {
+    res.set("Retry-After", String(err.retryAfterSeconds));
+  }
   const body: ErrorBody = { error: { code, message, requestId } };
   if (details !== undefined) body.error.details = details;
   res.status(status).json(body);
