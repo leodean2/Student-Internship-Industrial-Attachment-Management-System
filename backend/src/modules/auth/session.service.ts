@@ -1,17 +1,14 @@
-import { createHash, randomBytes } from "node:crypto";
 import type { Logger } from "../../infrastructure/logger";
 import type { TxRunner } from "../../infrastructure/transaction";
 import { Errors } from "../../shared/errors";
+import { hashToken, mintOpaqueToken } from "../../shared/security/opaque-token";
 import type { ActorContextService } from "./actor-context.service";
 import type { RefreshTokenRepository } from "./refresh-token.repository";
 import type { SessionConfig } from "./session.config";
 import type { TokenService } from "./token";
 
-export const hashToken = (raw: string): string => createHash("sha256").update(raw).digest("hex");
-const mint = () => {
-  const raw = randomBytes(32).toString("base64url"); // 256 bits of entropy
-  return { raw, hash: hashToken(raw) };
-};
+export { hashToken };
+const mint = mintOpaqueToken;
 const addSeconds = (d: Date, s: number) => new Date(d.getTime() + s * 1000);
 const earliest = (a: Date, b: Date) => (a.getTime() <= b.getTime() ? a : b);
 
