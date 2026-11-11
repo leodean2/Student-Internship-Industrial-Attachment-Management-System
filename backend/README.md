@@ -2,7 +2,7 @@
 
 API process for the Student Internship & Industrial Attachment Management System.
 Architecture follows Decisions #49–#56. Implemented so far: **Decision #51's authentication path**, the HTTP
-foundation from #50/#55, and **refresh-token sessions** (rotation, reuse detection, logout). No business modules exist yet.
+foundation from #50/#55, **refresh-token sessions**, and the University Supervisor invitation lifecycle.
 
 ## What is in this slice
 
@@ -15,13 +15,66 @@ foundation from #50/#55, and **refresh-token sessions** (rotation, reuse detecti
 | Probe route | `GET /api/v1/auth/me` returns exactly the `ActorContext` the rest of the system will see |
 | Refresh sessions | `POST /api/v1/auth/refresh` (rotating, single-use, concurrency-safe) and `POST /api/v1/auth/logout`; `SessionService.startSession` / `revokeAllSessions` primitives for later flows |
 | Login | `POST /api/v1/auth/login`; bcrypt verification, indistinguishable credential failures, and in-memory IP/email throttling |
+| Invitations | Admin create/cancel/list/retrieve plus public accept; one-use opaque tokens, transactional account provisioning, lifecycle audit, safe status-derived pagination, seven-day expiry |
+| Student registration | Transactional student account provisioning, one-use email verification, and audit events |
+| Student registration cleanup | Externally scheduled one-shot cleanup for expired unverified and rejected student registrations |
+| Registration reviewers | Admin-managed, department-scoped university-supervisor assignments with audited soft revocation |
+| Student roster | Admin-only CSV preview/import, immutable additive roster entries, import history, and lookup for registration confirmation |
+| Outbox worker | Separate worker entry point, lease renewal, retries, graceful shutdown, invitation and verification email templates |
 | Config | Zod-validated environment, fails fast, never echoes values |
 
-Login limits failed attempts to 10 per IP/email pair and 50 per IP in a 15-minute window. The throttle is in-memory
-and resets on process restart; it is not shared across API instances.
+Login limits failed attempts to 10 per IP/email pair, 50 per IP, and 30 per normalized email across IPs in a
+15-minute window. The global email limit can temporarily block the account owner if an attacker distributes enough
+attempts across addresses. The throttle is in-memory and resets on process restart; it is not shared across API
+instances.
 
-**Deliberately not built yet:** registration, invitations, password reset, account deactivation, any role-specific
-business route, any application/attachment policy, the worker process, email.
+Invitation creation enqueues a templated email but does not send it; delivery is left to the outbox worker. The raw
+invitation token is carried only in the acceptance URL in the outbox payload. Set `APP_BASE_URL` to the frontend origin;
+it defaults to `http://localhost:5173` outside production and is required to use HTTPS in production. The acceptance
+frontend route still needs to be available before deploying the Resend worker. Acceptance requires
+an allow-listed `Origin`, hashes the password before opening a transaction, serializes on the normalized invitation
+email, and atomically claims the invitation while creating an ACTIVE user, University Supervisor role/profile, and
+audit event. It does not create a login session. Unknown, expired, cancelled, and already-accepted tokens all return
+the same 404 response so acceptance does not disclose token state. Failed unusable-token guesses are limited to 10
+attempts per IP per 15-minute window. Admin cancellation returns state-specific 409 responses for known
+accepted/cancelled/expired invitations. Acceptance and cancellation serialize on the same
+normalized-email transaction lock and use conditional database-clock state changes.
+
+Student registration is available at `POST /api/v1/auth/register`; it creates a `PENDING_VERIFICATION` student and
+enqueues a 24-hour email verification link in the same transaction. `POST /api/v1/auth/verify-email` records
+`emailVerifiedAt` and spends the token but deliberately does **not** activate the account. Activation awaits a later
+authorized registration-number confirmation. Both endpoints require an allow-listed `Origin`, and verification
+failures are limited per IP by `EMAIL_VERIFY_FAILED_ATTEMPT_LIMIT` and `EMAIL_VERIFY_WINDOW_MS`.
+
+Admins can list invitations with `GET /api/v1/invitations?page=1&limit=20&status=PENDING&email=person%40example.com`
+and retrieve one with `GET /api/v1/invitations/:id`. The optional email filter is normalized and exact-match.
+Pagination reports `page`, `limit`, `total`, and `totalPages`. Status is derived in the order ACCEPTED, CANCELLED, EXPIRED, PENDING, using
+the database clock. Responses exclude the token hash and accepted-user ID. Listing sorts by `createdAt DESC, id DESC`
+and returns matching `data` and `pagination` metadata.
+
+Admin reviewer endpoints are:
+
+- `POST /api/v1/admin/registration-reviewers` to grant an assignment.
+- `GET /api/v1/admin/registration-reviewers` to list assignments.
+- `DELETE /api/v1/admin/registration-reviewers/:id` to revoke an assignment while retaining audit history.
+
+Assignments are scoped by normalized department code. Registration-decision services must call
+`RegistrationReviewPolicy` inside their transaction so a concurrent revocation waits until the decision completes.
+
+Admins import student rosters at `POST /api/v1/admin/student-roster/imports`; `text/csv` is required and `dryRun`
+defaults to `true`. Use `?dryRun=false` to commit. Header aliases and the provisional registration-number format are
+defined in the roster parser and shared registration-number helper. Imports are additive: they never overwrite
+entries, report exact repeats as skipped and differing rows as conflicts, and store only a hash/count summary in
+import history and audit metadata. `GET /api/v1/admin/student-roster/imports` lists history and
+`GET /api/v1/admin/student-roster/imports/:id` retrieves one summary.
+
+Assigned registration reviewers use `/api/v1/registration-reviews` to list and inspect department-scoped registrations,
+confirm or reject pending claims, and correct pending or rejected registration numbers. Confirmation requires a
+verified email and an eligible roster match; correction never confirms or activates an account. Reviewer assignments
+are checked and locked inside each service transaction, including for admins.
+
+**Deliberately not built yet:** verification-link resend, password reset, account deactivation, and
+application/attachment policies.
 
 ## Request flow
 
@@ -94,15 +147,61 @@ npx prisma migrate dev
 npm run dev                       # http://localhost:4000/api/v1/health
 ```
 
+### Local outbox worker
+
+Run the worker separately from the API with `npm run dev:worker` (or `npm run start:worker` after `npm run build`).
+The local `EMAIL_PROVIDER=log` sink suppresses delivery but resolves successfully, so claimed rows are persisted as
+`SENT`. Run it only against a local database whose outbox rows you are willing to consume; do not point it at a
+shared/Neon branch. `log` is rejected in production. The Resend adapter is implemented, but worker startup refuses
+Resend can render invitation-created messages. Missing templates are permanent failures.
+
+### Student registration cleanup
+
+The registration cleanup is a one-shot command; it does not run inside the API or email-worker loop.
+Build the backend, then invoke `npm run cleanup:student-registrations` from an external scheduler.
+The default invocation is a dry run: it logs the number of eligible candidates in the next batch
+(at most 100) and makes no changes. Review those counts before scheduling execution; use
+`npm run cleanup:student-registrations -- --execute` to delete eligible records. Each execution
+processes at most 100 eligible registrations using the database clock and a fixed,
+inclusive 14-day retention period. It records a `student-registration-cleanup` row in `job_runs`.
+Unverified registrations must still be email-unverified and pending registration review; verified
+students awaiting review and ACTIVE accounts are retained. Rejected registrations use
+`registrationDecidedAt` as their retention timestamp. Audit records are retained and attributed to the
+seeded SYSTEM actor while their prior actor ID is preserved in metadata. Related tokens are removed,
+all related outbox rows are deleted under row locks so an active worker claim is not raced, and
+recipient notifications are removed without touching other users' notifications.
+
 ## Tests
 
 ```bash
-npm test                          # 141 unit/HTTP tests, no database needed
-TEST_DATABASE_URL=postgresql://... npm run test:integration   # 30 tests against a DISPOSABLE database (login, parallel-refresh races, atomic rollback, session cap)
+npm test                          # 273 expected unit/HTTP tests, no database needed
+TEST_DATABASE_URL=postgresql://... npm run test:integration   # PostgreSQL integration tests against a DISPOSABLE database
 ```
 
-Integration tests need a database that already has the baseline migration **and** `prisma/constraints.sql` applied
-(the latter seeds the `SYSTEM` user they assert on). They create and remove their own fixture rows.
+The outbox repository, worker, and invitation-enqueue PostgreSQL suites are additionally opt-in: set
+`RUN_EMAIL_OUTBOX_INTEGRATION=true` and `OUTBOX_TEST_DB_DISPOSABLE=true` alongside `TEST_DATABASE_URL`. They refuse
+to run against `NEON_BRANCH=production`, require the database name `test_db`, and require an empty outbox before
+starting. The worker suite deletes only its uniquely prefixed fixtures and job runs it created. Do not run these
+suites in parallel against the same database.
+
+Integration tests need a disposable database with all migrations applied, including
+`20261106090000_provisioning_limits`, `20261109050133_user_email_verified_at`, and
+`20261109123000_registration_reviewers`, and `prisma/constraints.sql` applied (the latter seeds the `SYSTEM` user some
+tests assert on). Leave `TEST_DB_DRIVER` unset to use Prisma Client over the PostgreSQL adapter. The B-4/B-5 lifecycle
+tests are opt-in with `RUN_INVITATION_MANAGEMENT_INTEGRATION=true` and refuse to run when `NEON_BRANCH=production`.
+Student registration cleanup PostgreSQL tests are opt-in with
+`RUN_STUDENT_REGISTRATION_CLEANUP_INTEGRATION=true` and `OUTBOX_TEST_DB_DISPOSABLE=true`; they use a unique fixture
+prefix and refuse to run outside `test_db` or on `NEON_BRANCH=production`.
+The suite contains 23 invitation-creation, 5 acceptance, and 3 lifecycle-management integration cases (62 total
+expected); it includes acceptance/cancellation lock-wait races, database-clock, rollback, reissue-policy,
+single-claim concurrency, and two-connection-pool checks. It creates and removes its own fixture rows. Never point
+integration tests at production.
+
+For a verified PostgreSQL run, set `NEON_BRANCH=test` and
+`OUTBOX_TEST_DB_DISPOSABLE=true`, then run `npm run test:integration:verified`. It loads `.env`, requires a direct
+`TEST_DATABASE_URL` for `test_db`, enables the opt-in suites, and fails if any test fails, is skipped, or is marked
+todo. To split long verification runs into batches, pass Vitest file filters after `--`, for example:
+`npm run test:integration:verified -- tests/integration/password-reset.integration.test.ts`.
 `prisma/verification/verify-structure.sql` and `verify-behaviour.sql` check the schema itself (run behaviour only on a scratch DB).
 
 ## Render deployment
@@ -110,32 +209,25 @@ Integration tests need a database that already has the baseline migration **and*
 For a Render service whose root directory is `backend`, use this Build Command:
 
 ```bash
-npm ci && npx prisma generate && npm run build
+npm ci --include=dev && npm run build
 ```
 
-Set the Start Command to `npm start`. The explicit Prisma generation step ensures the client is generated during deployment.
+The build script generates the Prisma client before compiling. Set the Start Command to `npm start`, and configure
+`NODE_ENV=production` and `TRUST_PROXY_HOPS=1` for the Render proxy topology.
+Do not create a Render worker service yet. With no registered templates the Resend worker refuses to start, and
+production log mode is rejected.
 
 ## Verification status — read this
 
-Verified in the build sandbox (Node 22, PostgreSQL 16):
-- TypeScript typecheck clean; production build emits `dist/server.js`.
-- 98/98 unit and HTTP tests; 25/25 integration tests against real PostgreSQL through Prisma Client, including 6 rounds of 8 simultaneous
-  refreshes of one token (exactly one winner each time, no orphan rows), a rollback test for a crash mid-rotation, and database-level tests
-  of the 30-day cap, its CHECK constraint and chain inheritance. Time is read from the database clock; tests "travel in time" by backdating stored timestamps.
-- Critical behaviours were mutation-checked: removing the single-use guard, the transaction, chain revocation, the grace window or its boundary,
-  the Origin check, token hashing, the account-status check, the session cap, cap inheritance, expiry revocation, the cookie Max-Age, the
-  CORS wildcard rejection, the database CHECK, or switching back to the process clock each makes at least one test fail. (One breakage initially
-  survived — the explicit session-deadline check — and a test for it was added.)
-- The compiled build was booted and driven over real HTTP with curl (refresh, replay, logout, `/auth/me`); no token appears in the logs and none is stored unhashed.
-- `prisma/verification/verify-structure.sql`: 15/15 checks pass (28 unique indexes, 23 CHECKs, chain-inheritance data check). `verify-behaviour.sql`: 92/92.
+For Delivery 1, the full suite passed 240/240 unit/HTTP tests and 54/54 PostgreSQL integration tests. The final-tree
+structure verification passed 15/15 (27 CHECK constraints), behavior verification passed 94/94 on `verify_db`, and
+the Prisma schema diff was empty after dropping `_results`.
 
-**NOT verified — please run locally:**
-1. `npx prisma generate` / `migrate dev` with Prisma's own engines. The sandbox blocks Prisma's engine downloads, so tests ran against an
-   engine-less client (driver adapter) and against DDL generated from the schema by a script — not Prisma's migration output.
-2. `src/server.ts` itself. It calls `new PrismaClient()`; the sandbox client requires an adapter, so I booted the same wiring with an
-   adapter-based client instead. Your default-engine client should work without one.
-3. The Prisma introspection round-trip (`npx prisma db pull --print`, diff against `schema.prisma`).
-4. Other Node versions, and anything deployment-related.
+After adding invitation acceptance, `npm run typecheck` and `npm run build` passed; the full unit suite passed 256/256,
+and the full PostgreSQL integration suite passed 58/58 (382.76 seconds). For B-4/B-5, the full unit suite passed
+273/273, and the initial targeted PostgreSQL run passed 3 lifecycle-management, 4 acceptance, and 23
+invitation-creation cases. Later additions require a fresh verification run. Prisma reported all migrations applied
+and an empty schema diff against the test database before the latest acceptance response-policy correction.
 
 Versions tested: Express 5, TypeScript 5.9 (TypeScript 7 removed the `Node` module-resolution mode this CommonJS setup uses, so it is pinned),
 Prisma/@prisma/client 6.19, Vitest 5, Zod 4, pino 10.

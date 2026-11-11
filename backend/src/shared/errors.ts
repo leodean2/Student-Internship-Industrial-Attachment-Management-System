@@ -14,6 +14,10 @@ export type ErrorCode =
   | "NOT_FOUND"
   | "CONFLICT"
   | "RATE_LIMITED"
+  | "INVITATION_ALREADY_ACCEPTED"
+  | "INVITATION_ALREADY_CANCELLED"
+  | "INVITATION_EXPIRED"
+  | "INVITATION_STATE_CONFLICT"
   | "INTERNAL_ERROR";
 
 export class AppError extends Error {
@@ -43,6 +47,13 @@ export const Errors = {
   notFound: (message = "The requested resource was not found.") => new AppError(404, "NOT_FOUND", message),
   conflict: (message = "The request conflicts with the current state of the resource.") =>
     new AppError(409, "CONFLICT", message),
+  invitationAlreadyAccepted: () =>
+    new AppError(409, "INVITATION_ALREADY_ACCEPTED", "This invitation has already been accepted."),
+  invitationAlreadyCancelled: () =>
+    new AppError(409, "INVITATION_ALREADY_CANCELLED", "This invitation has already been cancelled."),
+  invitationExpired: () => new AppError(409, "INVITATION_EXPIRED", "This invitation has expired."),
+  invitationStateConflict: () =>
+    new AppError(409, "INVITATION_STATE_CONFLICT", "The invitation changed before the request could complete."),
   /** Throttled. Says nothing about WHICH limit tripped. */
   rateLimited: (retryAfterSeconds: number) =>
     new AppError(429, "RATE_LIMITED", "Too many attempts. Please try again later.", undefined, retryAfterSeconds),

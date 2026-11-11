@@ -1,17 +1,22 @@
 /**
- * Login throttling (login-slice decisions 1 and 2).
+ * Login throttling (login-slice decisions 1 and 2, plus the global per-email limit).
  *
- * Two limits, both over the same sliding window:
+ * Three limits, all over the same sliding window:
  *   - per IP + normalized email : 10 failed attempts   (stops guessing one account from one place)
  *   - per IP                    : 50 failed attempts   (stops one place trying many accounts)
- * The per-email key includes the IP on purpose: an attacker elsewhere cannot lock the real user out.
+ *   - per normalized email      : 30 failed attempts   (stops one account being guessed from many places)
+ * The IP+email key includes the IP on purpose: an attacker elsewhere cannot lock the real user out at the low
+ * threshold. The global per-email limit is the backstop for an attacker who rotates addresses.
  *
- * "Failed" is enforced without a race: an attempt RESERVES a slot on both keys before the password is
- * checked, and the slot is given back if the attempt turns out not to be a failure. So N simultaneous
- * wrong guesses can never get more than `limit` bcrypt comparisons through.
+ * A per-email limit is temporary rather than a lockout: refused attempts record nothing, and a slot frees when its
+ * original attempt expires. A successful login returns only its own IP and global-email reservations; previous
+ * failures still count. Its IP+email pair is cleared, as that pair has proved it knows the password.
  *
- * Storage is in memory behind AttemptStore (V1): counters reset on restart and are not shared between
- * API instances. A shared store (e.g. PostgreSQL) can replace it without touching callers.
+ * "Failed" is enforced without a race: an attempt reserves a slot on every key before the password is checked,
+ * and gives the slots back if the attempt is not a failure. A later key refusing also returns earlier reservations.
+ *
+ * Storage is in memory behind AttemptStore (V1): counters reset on restart and are not shared between API
+ * instances. A shared store (e.g. PostgreSQL) can replace it without touching callers.
  */
 
 import { InMemoryAttemptStore, type AttemptStore } from "../../shared/security/attempt-store";
@@ -23,18 +28,20 @@ export interface LoginThrottleConfig {
   perEmailLimit: number;
   perIpLimit: number;
   windowMs: number;
+  perEmailGlobalLimit?: number;
 }
 
-export const DEFAULT_LOGIN_THROTTLE: LoginThrottleConfig = {
+export const DEFAULT_LOGIN_THROTTLE: Required<LoginThrottleConfig> = {
   perEmailLimit: 10,
   perIpLimit: 50,
   windowMs: 15 * 60 * 1000,
+  perEmailGlobalLimit: 30,
 };
 
 export interface LoginPermit {
-  /** The password was correct: give the slot back on both keys and forget this IP+email's failures. The IP-wide count is NOT reset. */
+  /** Give this attempt's IP and global-email slots back, and clear the IP+email failures. */
   succeeded(): void;
-  /** The attempt ended without a verdict on the password (error, inactive account): give the slot back only. */
+  /** The attempt ended without a verdict on the password (error, inactive account): return every slot. */
   refund(): void;
 }
 
@@ -44,21 +51,22 @@ export type LoginAcquisition =
 
 export class LoginThrottle {
   private readonly store: AttemptStore;
-  private readonly config: LoginThrottleConfig;
+  private readonly config: Required<LoginThrottleConfig>;
   private readonly now: () => number;
 
   constructor(options: { store?: AttemptStore; config?: LoginThrottleConfig; now?: () => number } = {}) {
     this.store = options.store ?? new InMemoryAttemptStore();
-    this.config = options.config ?? DEFAULT_LOGIN_THROTTLE;
+    this.config = { ...DEFAULT_LOGIN_THROTTLE, ...options.config };
     this.now = options.now ?? Date.now;
   }
 
   /** Synchronous on purpose: no other request can interleave between the check and the reservation. */
   acquire(ip: string, email: string): LoginAcquisition {
-    const { perIpLimit, perEmailLimit, windowMs } = this.config;
+    const { perIpLimit, perEmailLimit, perEmailGlobalLimit, windowMs } = this.config;
     const at = this.now();
     const ipKey = `ip:${ip}`;
     const pairKey = `pair:${ip}|${email}`;
+    const emailKey = `email:${email}`;
 
     const ipWait = this.store.tryRecord(ipKey, perIpLimit, windowMs, at);
     if (ipWait > 0) return { allowed: false, retryAfterSeconds: ipWait };
@@ -67,6 +75,13 @@ export class LoginThrottle {
     if (pairWait > 0) {
       this.store.remove(ipKey, at); // a refused attempt must not use up the IP-wide budget
       return { allowed: false, retryAfterSeconds: pairWait };
+    }
+
+    const emailWait = this.store.tryRecord(emailKey, perEmailGlobalLimit, windowMs, at);
+    if (emailWait > 0) {
+      this.store.remove(ipKey, at);
+      this.store.remove(pairKey, at);
+      return { allowed: false, retryAfterSeconds: emailWait };
     }
 
     let settled = false;
@@ -78,12 +93,14 @@ export class LoginThrottle {
           settled = true;
           this.store.remove(ipKey, at);
           this.store.clear(pairKey);
+          this.store.remove(emailKey, at);
         },
         refund: () => {
           if (settled) return;
           settled = true;
           this.store.remove(ipKey, at);
           this.store.remove(pairKey, at);
+          this.store.remove(emailKey, at);
         },
       },
     };

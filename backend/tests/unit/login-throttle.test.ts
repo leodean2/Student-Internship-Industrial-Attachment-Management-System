@@ -1,10 +1,15 @@
 import { describe, expect, it } from "vitest";
-import { InMemoryAttemptStore, LoginThrottle, type LoginPermit } from "../../src/modules/auth/login-throttle";
+import {
+  InMemoryAttemptStore,
+  LoginThrottle,
+  type LoginPermit,
+  type LoginThrottleConfig,
+} from "../../src/modules/auth/login-throttle";
 
 const MIN = 60_000;
 const WINDOW = 15 * MIN;
 
-function setup(config = { perEmailLimit: 10, perIpLimit: 50, windowMs: WINDOW }, maxKeys?: number) {
+function setup(config: LoginThrottleConfig = { perEmailLimit: 10, perIpLimit: 50, windowMs: WINDOW }, maxKeys?: number) {
   const clock = { now: 1_000_000 };
   const store = new InMemoryAttemptStore(maxKeys);
   const throttle = new LoginThrottle({ store, config, now: () => clock.now });
@@ -114,7 +119,88 @@ describe("memory", () => {
     expect(store.size).toBeGreaterThan(0);
     clock.now += WINDOW + 2 * MIN;
     fail("10.9.9.9", "z@x.test"); // any call after the sweep interval triggers a sweep
-    expect(store.size).toBe(2); // only this attempt's two keys remain
+    expect(store.size).toBe(3); // only this attempt's three keys remain
+  });
+
+  describe("global per-email limit (30 failed attempts per email per 15 minutes)", () => {
+    const ipOf = (i: number) => `10.${Math.floor(i / 250)}.${i % 250}.1`;
+    const permitOf = (r: ReturnType<LoginThrottle["acquire"]>): LoginPermit => {
+      if (!r.allowed) throw new Error("expected an allowed attempt");
+      return r.permit;
+    };
+
+    it("allows 30 attempts from different addresses and refuses the 31st", () => {
+      const { fail } = setup();
+      for (let i = 0; i < 30; i++) expect(fail(ipOf(i), "v@x.test").allowed).toBe(true);
+      expect(fail(ipOf(30), "v@x.test")).toEqual({ allowed: false, retryAfterSeconds: 900 });
+    });
+
+    it("is per email, not global across all accounts", () => {
+      const { fail } = setup();
+      for (let i = 0; i < 30; i++) fail(ipOf(i), "v@x.test");
+      expect(fail(ipOf(31), "v@x.test").allowed).toBe(false);
+      expect(fail(ipOf(31), "other@x.test").allowed).toBe(true);
+    });
+
+    it("uses a sliding window and refused attempts do not extend it", () => {
+      const { clock, fail } = setup();
+      for (let i = 0; i < 30; i++) fail(ipOf(i), "v@x.test");
+      clock.now += WINDOW - 1;
+      expect(fail(ipOf(100), "v@x.test")).toEqual({ allowed: false, retryAfterSeconds: 1 });
+      clock.now = 1_000_000 + 1000;
+      for (let i = 0; i < 200; i++) {
+        clock.now += 1000;
+        fail(ipOf(200 + i), "v@x.test");
+      }
+      clock.now = 1_000_000 + WINDOW;
+      expect(fail(ipOf(500), "v@x.test").allowed).toBe(true);
+    });
+
+    it("supports a configured per-email limit", () => {
+      const { fail } = setup({ perEmailLimit: 10, perIpLimit: 50, windowMs: WINDOW, perEmailGlobalLimit: 2 });
+      expect(fail("1.1.1.1", "v@x.test").allowed).toBe(true);
+      expect(fail("2.2.2.2", "v@x.test").allowed).toBe(true);
+      expect(fail("3.3.3.3", "v@x.test").allowed).toBe(false);
+    });
+
+    it("returns the IP reservation when the global-email limit refuses an attempt", () => {
+      const { fail } = setup({ perEmailLimit: 10, perIpLimit: 3, windowMs: WINDOW, perEmailGlobalLimit: 2 });
+      const results = [
+        fail("1.1.1.1", "e1@x.test"),
+        fail("1.1.1.1", "e1@x.test"),
+        fail("1.1.1.1", "e1@x.test"),
+        fail("1.1.1.1", "e2@x.test"),
+        fail("1.1.1.1", "e3@x.test"),
+      ].map((r) => r.allowed);
+      expect(results).toEqual([true, true, false, true, false]);
+    });
+
+    it("returns the IP+email reservation when the global-email limit refuses an attempt", () => {
+      const { throttle, fail } = setup({ perEmailLimit: 2, perIpLimit: 50, windowMs: WINDOW, perEmailGlobalLimit: 2 });
+      fail("1.1.1.1", "e@x.test");
+      const b = permitOf(throttle.acquire("2.2.2.2", "e@x.test"));
+      expect(fail("1.1.1.1", "e@x.test").allowed).toBe(false);
+      b.succeeded();
+      expect(fail("1.1.1.1", "e@x.test").allowed).toBe(true);
+      expect(fail("1.1.1.1", "e@x.test").allowed).toBe(false);
+    });
+
+    it("returns only a successful attempt's own email slot", () => {
+      const { fail, throttle } = setup({ perEmailLimit: 10, perIpLimit: 50, windowMs: WINDOW, perEmailGlobalLimit: 3 });
+      fail("1.1.1.1", "v@x.test");
+      fail("2.2.2.2", "v@x.test");
+      permitOf(throttle.acquire("3.3.3.3", "v@x.test")).succeeded();
+      expect(fail("4.4.4.4", "v@x.test").allowed).toBe(true);
+      expect(fail("5.5.5.5", "v@x.test").allowed).toBe(false);
+    });
+
+    it("refunds all three reservations", () => {
+      const { throttle } = setup({ perEmailLimit: 1, perIpLimit: 1, windowMs: WINDOW, perEmailGlobalLimit: 1 });
+      permitOf(throttle.acquire("1.1.1.1", "v@x.test")).refund();
+      expect(throttle.acquire("2.2.2.2", "v@x.test").allowed).toBe(true);
+      expect(throttle.acquire("1.1.1.1", "w@x.test").allowed).toBe(true);
+      expect(throttle.acquire("3.3.3.3", "v@x.test").allowed).toBe(false);
+    });
   });
 
   it("is bounded by maxKeys", () => {

@@ -50,7 +50,9 @@ describe.skipIf(!url)("login against PostgreSQL (login slice)", () => {
     sessions,
     tokens,
     // generous limits: throttling is covered by the unit and HTTP tests, and must not make this suite flaky
-    throttle: new LoginThrottle({ config: { perEmailLimit: 1000, perIpLimit: 1000, windowMs: 15 * 60_000 } }),
+    throttle: new LoginThrottle({
+      config: { perEmailLimit: 1000, perIpLimit: 1000, perEmailGlobalLimit: 1000, windowMs: 15 * 60_000 },
+    }),
     passwords: { verify: verifyPassword, dummyHash: getDummyHash },
     refreshTtlSeconds: DEFAULT_SESSION_CONFIG.refreshTtlSeconds,
     logger,
@@ -74,7 +76,7 @@ describe.skipIf(!url)("login against PostgreSQL (login slice)", () => {
   });
 
   afterAll(async () => {
-    const ids = [id("ok"), id("inactive")];
+    const ids = [id("ok"), id("inactive"), id("case")];
     await prisma.refreshToken.updateMany({ where: { userId: { in: ids } }, data: { replacedById: null } });
     await prisma.refreshToken.deleteMany({ where: { userId: { in: ids } } });
     await prisma.userRole.deleteMany({ where: { userId: { in: ids } } });
@@ -124,11 +126,37 @@ describe.skipIf(!url)("login against PostgreSQL (login slice)", () => {
     expect((await rowsFor(id("ok"))).length).toBe(before);
   });
 
-  it("a deactivated account with the correct password is ACCOUNT_INACTIVE and gets no session", async () => {
+  it("a deactivated account with the correct password gets the generic credential failure and no session", async () => {
     const res = await post("/api/v1/auth/login", { email: email("inactive"), password: PASSWORD });
     expect(res.status).toBe(401);
-    expect(res.body.error.code).toBe("ACCOUNT_INACTIVE");
+    expect(res.body.error).toMatchObject({ code: "UNAUTHENTICATED", message: "Invalid email or password." });
     expect(await rowsFor(id("inactive"))).toHaveLength(0);
+  });
+
+  it("the database rejects a mixed-case email (ck_users_email_lowercase)", async () => {
+    const [constraint] = await prisma.$queryRaw<Array<{ constraintExists: boolean }>>`
+      SELECT EXISTS (
+        SELECT 1
+        FROM pg_constraint
+        WHERE conname = 'ck_users_email_lowercase'
+          AND conrelid = 'public.users'::regclass
+      ) AS "constraintExists"
+    `;
+    expect(
+      constraint?.constraintExists,
+      "TEST_DATABASE_URL must point to a database with the email CHECK migration applied",
+    ).toBe(true);
+
+    let message: string | undefined;
+    try {
+      await prisma.user.create({
+        data: { id: id("case"), email: `Mixed-${run}@Example.test`, passwordHash: "x", name: "case" },
+      });
+    } catch (error: unknown) {
+      message = error instanceof Error ? error.message : String(error);
+    }
+    expect(message, "expected the mixed-case insert to be rejected").toMatch(/ck_users_email_lowercase|check constraint/i);
+    expect(await prisma.user.count({ where: { id: id("case") } })).toBe(0);
   });
 
   it("the seeded SYSTEM user can never log in and gets no session", async () => {

@@ -1,7 +1,7 @@
 import express from "express";
 import request from "supertest";
 import { z } from "zod";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { createAuthenticate, requireRole } from "../../src/modules/auth/auth.middleware";
 import { errorHandler, notFoundHandler } from "../../src/shared/http/error-handler";
 import { requestContext } from "../../src/shared/http/request-context";
@@ -23,6 +23,19 @@ function probeApp() {
   app.use(notFoundHandler);
   app.use(errorHandler);
   return { ...ctx, app };
+}
+
+/** A3: protected route with a handler spy, to prove denied requests never reach the handler. */
+function studentProbeApp() {
+  const ctx = buildTestApp();
+  const authenticate = createAuthenticate({ tokens: ctx.tokens, actors: ctx.actors });
+  const handler = vi.fn((_req: express.Request, res: express.Response) => { res.json({ ok: true }); });
+  const app = express();
+  app.use(requestContext(ctx.logger));
+  app.get("/student-only", authenticate, requireRole("STUDENT"), handler);
+  app.use(notFoundHandler);
+  app.use(errorHandler);
+  return { ...ctx, app, handler };
 }
 const bearer = (t: string) => `Bearer ${t}`;
 
@@ -86,5 +99,31 @@ describe("error handling (Decision #55)", () => {
     expect(res.body.error.code).toBe("VALIDATION_ERROR");
     expect(res.body.error.details).toEqual([{ path: "email", message: expect.any(String) }]);
     expect(JSON.stringify(res.body)).not.toContain("super-secret-not-an-email");
+  });
+});
+
+describe("A3: protected student route — handler spy (C1-E)", () => {
+  it("pending and deactivated students are denied before the handler runs", async () => {
+    const { app, tokens, handler } = studentProbeApp();
+    const pending = await request(app).get("/student-only").set("Authorization", `Bearer ${tokens.sign("pending")}`);
+    expect(pending.status).toBe(401);
+    expect(pending.body.error.code).toBe("ACCOUNT_INACTIVE");
+
+    const deactivated = await request(app).get("/student-only").set("Authorization", `Bearer ${tokens.sign("deactivated")}`);
+    expect(deactivated.status).toBe(401);
+    expect(deactivated.body.error.code).toBe("ACCOUNT_INACTIVE");
+
+    expect(handler).not.toHaveBeenCalled();
+  });
+
+  it("an active student gets through; an active non-student gets 403", async () => {
+    const { app, tokens, handler } = studentProbeApp();
+    const stu = await request(app).get("/student-only").set("Authorization", `Bearer ${tokens.sign("stu")}`);
+    expect(stu.status).toBe(200);
+    expect(handler).toHaveBeenCalledTimes(1);
+
+    const adm = await request(app).get("/student-only").set("Authorization", `Bearer ${tokens.sign("adm")}`);
+    expect(adm.status).toBe(403);
+    expect(handler).toHaveBeenCalledTimes(1); // handler not called for the 403
   });
 });

@@ -16,6 +16,26 @@ import { DEFAULT_SESSION_CONFIG, type CookieConfig } from "./modules/auth/sessio
 import { SessionService } from "./modules/auth/session.service";
 import { createTokenService } from "./modules/auth/token";
 import { prismaTxRunner } from "./infrastructure/transaction";
+import { PrismaAuditRepository } from "./modules/audit/audit.repository";
+import { PrismaInvitationRepository } from "./modules/invitations/invitation.repository";
+import { InvitationService } from "./modules/invitations/invitation.service";
+import { PrismaOutboxRepository } from "./modules/outbox/outbox.repository";
+import { PrismaEmailVerificationTokenRepository } from "./modules/student-registration/email-verification-token.repository";
+import { PrismaStudentRegistrationRepository } from "./modules/student-registration/student-registration.repository";
+import { StudentRegistrationService } from "./modules/student-registration/student-registration.service";
+import { RegistrationReviewerService } from "./modules/registration-reviewer/registration-reviewer.service";
+import { registrationReviewerRepository } from "./modules/registration-reviewer/registration-reviewer.runtime";
+import { StudentRosterService } from "./modules/student-roster/student-roster.service";
+import { rosterLookup, studentRosterRepository } from "./modules/student-roster/student-roster.runtime";
+import { registrationReviewPolicy } from "./modules/registration-reviewer/registration-reviewer.runtime";
+import { PrismaRegistrationReviewRepository } from "./modules/registration-review/registration-review.repository";
+import { RegistrationReviewService } from "./modules/registration-review/registration-review.service";
+import { PasswordResetService } from "./modules/auth/password-reset.service";
+import { PrismaPasswordResetTokenRepository } from "./modules/auth/password-reset-token.repository";
+import { PrismaPasswordResetUserRepository } from "./modules/auth/password-reset-user.repository";
+import { createThrottleKeyer } from "./shared/throttle-key";
+import { AccountDeactivationService } from "./modules/account-deactivation/account-deactivation.service";
+import { PrismaAccountDeactivationRepository } from "./modules/account-deactivation/account-deactivation.repository";
 
 const env = loadEnv();
 const logger = createLogger(env.LOG_LEVEL);
@@ -50,7 +70,64 @@ const login = new LoginService({
   refreshTtlSeconds: DEFAULT_SESSION_CONFIG.refreshTtlSeconds,
   logger,
 });
+const invitations = new InvitationService({
+  repo: new PrismaInvitationRepository(),
+  audit: new PrismaAuditRepository(),
+  outbox: new PrismaOutboxRepository(),
+  appBaseUrl: env.APP_BASE_URL,
+  runTx: prismaTxRunner(prisma),
+  logger,
+});
+const studentRegistration = new StudentRegistrationService({
+  users: new PrismaStudentRegistrationRepository(),
+  tokens: new PrismaEmailVerificationTokenRepository(),
+  outbox: new PrismaOutboxRepository(),
+  audit: new PrismaAuditRepository(),
+  appBaseUrl: env.APP_BASE_URL,
+  runTx: prismaTxRunner(prisma),
+  verifyAttemptLimit: env.EMAIL_VERIFY_FAILED_ATTEMPT_LIMIT,
+  verifyWindowMs: env.EMAIL_VERIFY_WINDOW_MS,
+});
+const registrationReviewers = new RegistrationReviewerService({
+  repo: registrationReviewerRepository,
+  audit: new PrismaAuditRepository(),
+  runTx: prismaTxRunner(prisma),
+});
+const studentRoster = new StudentRosterService({
+  repo: studentRosterRepository,
+  audit: new PrismaAuditRepository(),
+  runTx: prismaTxRunner(prisma),
+});
+const registrationReviews = new RegistrationReviewService({
+  repo: new PrismaRegistrationReviewRepository(),
+  policy: registrationReviewPolicy,
+  roster: rosterLookup,
+  rosterRepo: studentRosterRepository,
+  audit: new PrismaAuditRepository(),
+  outbox: new PrismaOutboxRepository(),
+  appBaseUrl: env.APP_BASE_URL,
+  runTx: prismaTxRunner(prisma),
+});
 void getDummyHash().catch((err) => logger.error({ err }, "could not prepare the dummy password hash"));
+
+const passwordReset = new PasswordResetService({
+  users: new PrismaPasswordResetUserRepository(prisma),
+  tokens: new PrismaPasswordResetTokenRepository(),
+  outbox: new PrismaOutboxRepository(),
+  audit: new PrismaAuditRepository(),
+  sessions,
+  appBaseUrl: env.APP_BASE_URL,
+  runTx: prismaTxRunner(prisma),
+  emailLimitPerHour: env.PASSWORD_RESET_EMAIL_LIMIT_PER_HOUR,
+  throttleKeyer: createThrottleKeyer(env.THROTTLE_KEY_SECRET),
+});
+
+const accountDeactivation = new AccountDeactivationService({
+  repo: new PrismaAccountDeactivationRepository(),
+  audit: new PrismaAuditRepository(),
+  outbox: new PrismaOutboxRepository(),
+  runTx: prismaTxRunner(prisma),
+});
 
 const app = createApp({
   logger,
@@ -60,6 +137,13 @@ const app = createApp({
   sessions,
   cookie,
   login,
+  invitations,
+  studentRegistration,
+  registrationReviewers,
+  studentRoster,
+  registrationReviews,
+  passwordReset,
+  accountDeactivation,
   trustProxyHops: env.TRUST_PROXY_HOPS,
 });
 

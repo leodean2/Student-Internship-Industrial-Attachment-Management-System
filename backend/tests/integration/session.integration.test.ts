@@ -55,7 +55,7 @@ describe.skipIf(!url)("refresh-token sessions against PostgreSQL (Decisions #51/
       await prisma.user.create({ data: { id: uid(n), email: `${uid(n)}@example.test`, passwordHash: "x", name: n, status: "ACTIVE" } });
       await prisma.userRole.create({ data: { userId: uid(n), role: "STUDENT" } });
     }
-  });
+  }, 60_000);
 
   afterAll(async () => {
     const ids = USERS.map(uid);

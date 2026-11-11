@@ -55,7 +55,14 @@ describe.skipIf(!url)("auth against PostgreSQL (Decision #51)", () => {
     });
     await user("student", { status: "ACTIVE" });
     await prisma.userRole.create({ data: { userId: id("student"), role: "STUDENT" } });
-    await prisma.studentProfile.create({ data: { id: id("sp"), userId: id("student"), registrationNumber: `REG-${run}` } });
+    await prisma.studentProfile.create({
+      data: {
+        id: id("sp"),
+        userId: id("student"),
+        registrationNumber: `REG-${run}`,
+        registrationDepartmentCode: "REG",
+      },
+    });
 
     await user("multi", { status: "ACTIVE" });
     await prisma.userRole.createMany({

@@ -9,13 +9,18 @@
   },
   "scripts": {
     "dev": "tsx watch src/server.ts",
-    "build": "tsc -p tsconfig.build.json",
+    "dev:worker": "tsx watch src/worker.ts",
+    "build": "prisma generate && tsc -p tsconfig.build.json",
     "start": "node dist/server.js",
+    "start:worker": "node dist/worker.js",
+    "cleanup:student-registrations": "node dist/cleanup.js",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:integration": "vitest run --config vitest.integration.config.mts",
+    "test:integration:verified": "node scripts/run-verified-integrations.mjs",
     "prisma:generate": "prisma generate",
-    "prisma:migrate": "prisma migrate dev"
+    "prisma:migrate": "prisma migrate dev",
+    "bootstrap:admin": "dotenv -e .env -- tsx src/scripts/bootstrap-admin.ts"
   },
   "dependencies": {
     "@neon/config": "^1.9.1",
@@ -25,6 +30,7 @@
     "bcrypt": "^6.0.0",
     "cookie": "^0.7.2",
     "cors": "^2.8.6",
+    "csv-parse": "^7.0.3",
     "dotenv": "^18.0.7",
     "express": "^5.3.0",
     "helmet": "^8.3.0",

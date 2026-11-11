@@ -21,6 +21,262 @@
 			"command": "$winget = Get-Command winget.exe -ErrorAction SilentlyContinue; if (-not $winget) { Write-Output 'WINGET_NOT_FOUND'; exit 1 }; winget install --id Git.Git --exact --silent --accept-package-agreements --accept-source-agreements",
 			"isBackground": false,
 			"problemMatcher": []
+		},
+		{
+			"label": "Temporary acceptance rule checks",
+			"type": "shell",
+			"command": "Set-Location backend; $env:RUN_INVITATION_MANAGEMENT_INTEGRATION='true'; $env:NODE_OPTIONS='--require dotenv/config'; $env:dotenv_config_path='.env'; npm run test:integration -- tests/integration/invitation.lifecycle-race.integration.test.ts",
+			"args": [],
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "Temporary Neon CLI availability",
+			"type": "shell",
+			"command": "neon --version; if ($?) { neon projects list }",
+			"args": [],
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "Temporary final unit and typecheck",
+			"type": "shell",
+			"command": "Set-Location backend; $env:RUN_INVITATION_MANAGEMENT_INTEGRATION='true'; $env:NODE_OPTIONS='--require dotenv/config'; $env:dotenv_config_path='.env'; npm run test:integration",
+			"args": [],
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "Temporary Neon database CLI help",
+			"type": "shell",
+			"command": "neon databases create --help",
+			"args": [],
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "Safely inspect verify DB target",
+			"type": "shell",
+			"command": "node",
+			"args": [
+				"-e",
+				"const fs=require('fs'); for (const f of ['.env','backend/.env']) { if (!fs.existsSync(f)) continue; const lines=fs.readFileSync(f,'utf8').split(/\\r?\\n/); for (const line of lines) { const m=line.match(/^\\s*(verify_database_url)\\s*=\\s*(.*?)\\s*$/i); if (!m) continue; let v=m[2].replace(/^['\"]|['\"]$/g,''); try { const u=new URL(v); console.log(`${f}: ${m[1]} present; host=${u.hostname}; database=${decodeURIComponent(u.pathname.slice(1))}; sslmode=${u.searchParams.get('sslmode')||'unspecified'}`); } catch { console.log(`${f}: ${m[1]} present but is not a valid URL`); } } }"
+			],
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "Inspect verify DB target safely",
+			"type": "shell",
+			"command": "node",
+			"args": [
+				"-e",
+				"const fs = require(\"fs\"); for (const f of [\".env\", \"backend/.env\"]) { if (!fs.existsSync(f)) continue; const lines = fs.readFileSync(f, \"utf8\").split(/\\r?\\n/); for (const line of lines) { const m = line.match(/^\\s*(verify_database_url)\\s*=\\s*(.*?)\\s*$/i); if (!m) continue; const value = m[2].replace(/^['\"]|['\"]$/g, \"\"); try { const u = new URL(value); console.log(f + \": \" + m[1] + \" present; host=\" + u.hostname + \"; database=\" + decodeURIComponent(u.pathname.slice(1)) + \"; sslmode=\" + (u.searchParams.get(\"sslmode\") || \"unspecified\")); } catch { console.log(f + \": \" + m[1] + \" present but invalid URL\"); } } }"
+			],
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "Check Node task output",
+			"type": "shell",
+			"command": "node",
+			"args": [
+				"-p",
+				"3"
+			],
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "Find verification env key",
+			"type": "shell",
+			"command": "node",
+			"args": [
+				"-e",
+				"const fs = require(\"fs\"); const text = fs.readFileSync(\"backend/.env\", \"utf8\"); const names = text.split(/\\r?\\n/).map(line => line.split(\"=\")[0].trim()).filter(name => name.toLowerCase().includes(\"verify\")); console.log(JSON.stringify(names));"
+			],
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "Identify verify DB target safely",
+			"type": "shell",
+			"command": "node",
+			"args": [
+				"-p",
+				"(()=>{const text=require(\"fs\").readFileSync(\"backend/.env\",\"utf8\");const line=text.split(/\\r?\\n/).find(x=>x.toLowerCase().startsWith(\"verify_database_url=\"));if(!line)return \"verify_database_url not found\";const value=line.slice(line.indexOf(\"=\")+1).trim().replace(/^\"|\"$/g,\"\");const url=new URL(value);return JSON.stringify({host:url.hostname,database:url.pathname.slice(1),queryKeys:[...url.searchParams.keys()]})})()"
+			],
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "Read safe verify DB metadata",
+			"type": "shell",
+			"command": "node",
+			"args": [
+				"-p",
+				"(()=>{const text=require(`fs`).readFileSync(`backend/.env`,`utf8`);const line=text.split(/\\r?\\n/).find(x=>x.toLowerCase().startsWith(`verify_database_url=`));if(!line)return `missing`;const value=line.slice(line.indexOf(`=`)+1).trim().replaceAll(String.fromCharCode(34),``);const url=new URL(value);return JSON.stringify({host:url.hostname,database:url.pathname.slice(1)})})()"
+			],
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "Find verify database project",
+			"type": "shell",
+			"command": "neon",
+			"args": [
+				"projects",
+				"list"
+			],
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "Inspect branch list options",
+			"type": "shell",
+			"command": "neon",
+			"args": [
+				"branches",
+				"list",
+				"--help"
+			],
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "List configured project branches",
+			"type": "shell",
+			"command": "neon",
+			"args": [
+				"branches",
+				"list",
+				"--project-id",
+				"orange-water-76200859"
+			],
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "Find verify branch globally",
+			"type": "shell",
+			"command": "neon",
+			"args": [
+				"branches",
+				"list",
+				"--project-id",
+				"cool-rice-16157298"
+			],
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "mkdir-email-outbox",
+			"type": "shell",
+			"command": "mkdir -p backend/src/modules/email-outbox",
+			"args": [],
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "build"
+		},
+		{
+			"label": "mkdir-prisma-migration",
+			"type": "shell",
+			"command": "mkdir -p backend/prisma/migrations/20261108000000_email_outbox_worker_foundation",
+			"args": [],
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "build"
+		},
+		{
+			"label": "check-git-status",
+			"type": "shell",
+			"command": "git -C \"C:/Users/user/Student Internship and Industrial Attachment Management System\" status --short",
+			"args": [],
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "build"
+		},
+		{
+			"label": "validate-prisma-and-tsc",
+			"type": "shell",
+			"command": "cd \"C:\\Users\\user\\Student Internship and Industrial Attachment Management System\\backend\"; node .\\node_modules\\prisma\\build\\index.js validate; node .\\node_modules\\prisma\\build\\index.js generate; npx tsc --noEmit",
+			"args": [],
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "build"
+		},
+		{
+			"label": "check-backend-node-modules",
+			"type": "shell",
+			"command": "$root = 'C:\\Users\\user\\Student Internship and Industrial Attachment Management System\\backend'; if (Test-Path (Join-Path $root 'node_modules')) { Write-Output 'node_modules present' } else { Write-Output 'node_modules missing' }; if (Test-Path (Join-Path $root 'package.json')) { Write-Output 'package.json present' }",
+			"args": [],
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "build"
+		},
+		{
+			"label": "validate-prisma-and-tsc-2",
+			"type": "shell",
+			"command": "Set-Location -LiteralPath 'C:\\Users\\user\\Student Internship and Industrial Attachment Management System\\backend'; node .\\node_modules\\prisma\\build\\index.js validate; node .\\node_modules\\prisma\\build\\index.js generate; npx tsc --noEmit",
+			"args": [],
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "build"
+		},
+		{
+			"label": "vitest-env-check-2",
+			"type": "shell",
+			"command": "Set-Location -LiteralPath 'C:\\Users\\user\\Student Internship and Industrial Attachment Management System\\backend'; npx vitest run tests/unit/env.test.ts",
+			"args": [],
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "build"
+		},
+		{
+			"label": "Final email ownership typecheck",
+			"type": "shell",
+			"command": "Set-Location -LiteralPath 'C:\\Users\\user\\Student Internship and Industrial Attachment Management System\\backend'; npm run typecheck",
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "Temporary D3 migration operation",
+			"type": "shell",
+			"command": "Set-Location -LiteralPath 'C:\\Users\\user\\Student Internship and Industrial Attachment Management System\\backend'; node prisma/verification/temporary-legacy-fixture-maintenance.mjs verify",
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "Temporary safe test DB metadata inspection",
+			"type": "shell",
+			"command": "Set-Location -LiteralPath 'C:\\Users\\user\\Student Internship and Industrial Attachment Management System\\backend'; node -e \"require('dotenv').config(); for (const key of ['TEST_DATABASE_URL','DATABASE_URL','DATABASE_URL_UNPOOLED']) { const raw=process.env[key]; if (!raw) { console.log(key + '=missing'); continue; } try { const u=new URL(raw); console.log(key + '=set host=' + u.hostname + ' database=' + decodeURIComponent(u.pathname.slice(1)) + ' pooler=' + u.hostname.includes('-pooler')); } catch { console.log(key + '=set but unparsable'); } } console.log('NEON_BRANCH=' + (process.env.NEON_BRANCH || 'unset')); for (const key of ['RUN_EMAIL_OUTBOX_INTEGRATION','RUN_PASSWORD_RESET_INTEGRATION','RUN_STUDENT_REGISTRATION_CLEANUP_INTEGRATION','RUN_ACCOUNT_DEACTIVATION_INTEGRATION','RUN_INVITATION_MANAGEMENT_INTEGRATION','OUTBOX_TEST_DB_DISPOSABLE']) console.log(key + '=' + (process.env[key] || 'unset'));",
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "Temporary safe test DB metadata inspection 2",
+			"type": "shell",
+			"command": "node",
+			"args": [
+				"-p",
+				"(()=>{const e=require(\"dotenv\").parse(require(\"fs\").readFileSync(\"backend/.env\",\"utf8\"));return JSON.stringify([\"TEST_DATABASE_URL\",\"DATABASE_URL\",\"DATABASE_URL_UNPOOLED\"].map(k=>{const v=e[k];if(!v)return {key:k,set:false};try{const u=new URL(v);return {key:k,set:true,host:u.hostname,database:decodeURIComponent(u.pathname.slice(1)),pooler:u.hostname.includes(\"-pooler\")}}catch{return {key:k,set:true,parseable:false}}}).concat([\"NEON_BRANCH\",\"RUN_EMAIL_OUTBOX_INTEGRATION\",\"RUN_PASSWORD_RESET_INTEGRATION\",\"RUN_STUDENT_REGISTRATION_CLEANUP_INTEGRATION\",\"RUN_ACCOUNT_DEACTIVATION_INTEGRATION\",\"RUN_INVITATION_MANAGEMENT_INTEGRATION\",\"OUTBOX_TEST_DB_DISPOSABLE\"].map(k=>({key:k,value:e[k]||\"unset\"}))))})()"
+			],
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "Temporary verified C3 policy check",
+			"type": "shell",
+			"command": "Set-Location -LiteralPath 'C:\\Users\\user\\Student Internship and Industrial Attachment Management System\\backend'; $env:OUTBOX_TEST_DB_DISPOSABLE='true'; npm run test:integration:verified -- tests/integration/account-deactivation.integration.test.ts",
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "Temporary final deactivation unit checks",
+			"type": "shell",
+			"command": "Set-Location -LiteralPath 'C:\\Users\\user\\Student Internship and Industrial Attachment Management System\\backend'; npm test -- tests/unit/account-deactivation.service.test.ts tests/unit/account-deactivation.http.test.ts",
+			"isBackground": false,
+			"problemMatcher": []
 		}
 	]
 }

@@ -15,13 +15,45 @@ BEGIN
   INSERT INTO _results(name, expected, got, pass) VALUES (name, expect, got, got = expect);
 END $f$ LANGUAGE plpgsql;
 
+-- ---------- cleanup: remove any rows left by a previous run ----------
+-- Deletion order respects FK constraints (children before parents).
+DELETE FROM audit_logs WHERE "actorUserId" IN ('u_student','u_student2','u_admin','u_usup','u_osup','u_osup2','u_name_ok','00000000-0000-0000-0000-000000000001') OR "actorUserId" LIKE 'u_%';
+DELETE FROM email_outbox WHERE id IN ('eo1','eo2','eo3','eo4','eo5');
+DELETE FROM refresh_tokens WHERE id IN ('rt1','rt2','rt3','rt_d1','rt_d2','rt_c1','rt_c2','rt_c3','rt_c4','rt_t');
+DELETE FROM password_reset_tokens WHERE id = 'prt_t';
+DELETE FROM email_verification_tokens WHERE id = 'evt_t';
+DELETE FROM invitations WHERE id IN ('i1','i2','i3','i4','i_exp','i_reissue','i_reissue2','i_dup_hash','i_dup_accept');
+DELETE FROM final_evaluation_ratings WHERE id IN ('fr1');
+DELETE FROM final_evaluations WHERE id IN ('fe0','fe1','fe2','fe_dup');
+DELETE FROM industry_evaluation_ratings WHERE id IN ('ir1','ir2','ir3','ir4');
+DELETE FROM industry_evaluation_versions WHERE id = 'iev1';
+DELETE FROM industry_evaluations WHERE id IN ('ie1','ie2');
+DELETE FROM document_versions WHERE id IN ('dv1','dv2','dv3','dv4','dv5');
+DELETE FROM documents WHERE id IN ('d1','d2','x13','x14','x15');
+DELETE FROM weekly_log_versions WHERE "weeklyLogId" IN ('wl1','wl2');
+DELETE FROM weekly_logs WHERE id IN ('wl1','wl2','wl_dup','x11','x12');
+DELETE FROM termination_records WHERE id IN ('tr1','tr2');
+DELETE FROM termination_reason_categories WHERE id = 'trc1';
+DELETE FROM attachments WHERE id IN ('A1','A2','A3','A4','A_dup','x5','x6','x7','x8','x9','x10');
+DELETE FROM attachment_applications WHERE id IN ('app1','app2','app3','app4','app5','app6','app_dup','x1','x2','x3','x4');
+DELETE FROM university_supervisor_profiles WHERE id IN ('usp1','usp_sid_empty','usp_sid_long','usp_sid_null');
+DELETE FROM organization_supervisor_profiles WHERE id IN ('osp1','osp2','osp_dup');
+DELETE FROM student_profiles WHERE id IN ('s1','s2','s_dup');
+DELETE FROM organizations WHERE id = 'org1';
+DELETE FROM document_type_configs WHERE id IN ('dt1','dt2','dt3');
+DELETE FROM evaluation_criteria WHERE id IN ('c1','c2','cx','cy');
+DELETE FROM users WHERE id IN ('u_student','u_student2','u_admin','u_usup','u_osup','u_osup2','u_case','u_case2','u_tok','u_name_empty','u_name_long','u_name_ok');
+
 -- ---------- fixture (all must succeed) ----------
 SELECT t('fixture: users', $$INSERT INTO users(id,email,"passwordHash",name,"updatedAt") VALUES
  ('u_student','s@x.com','h','Student',now()),('u_student2','s2@x.com','h','Student2',now()),
  ('u_admin','a@x.com','h','Admin',now()),('u_usup','us@x.com','h','UniSup',now()),
  ('u_osup','os@x.com','h','OrgSup',now()),('u_osup2','os2@x.com','h','OrgSup2',now())$$,'ok');
+SELECT t('#88 mixed-case email rejected (ck_users_email_lowercase)', $$INSERT INTO users(id,email,"passwordHash",name,"updatedAt") VALUES ('u_case','MixedCase@x.com','h','Case',now())$$,'23514');
+SELECT t('#88 lowercase email accepted', $$INSERT INTO users(id,email,"passwordHash",name,"updatedAt") VALUES ('u_case2','lowercase@x.com','h','Case2',now())$$,'ok');
 SELECT t('fixture: profiles', $$
- INSERT INTO student_profiles(id,"userId","registrationNumber") VALUES ('s1','u_student','CIT-1'),('s2','u_student2','CIT-2');
+ INSERT INTO student_profiles(id,"userId","registrationNumber","registrationDepartmentCode")
+ VALUES ('s1','u_student','CIT-221-001/2024','CIT'),('s2','u_student2','CIT-221-002/2024','CIT');
  INSERT INTO university_supervisor_profiles(id,"userId") VALUES ('usp1','u_usup');
  INSERT INTO organizations(id,name,"proposedByUserId","updatedAt") VALUES ('org1','Acme','u_admin',now());
  INSERT INTO organization_supervisor_profiles(id,"userId","organizationId") VALUES ('osp1','u_osup','org1'),('osp2','u_osup2','org1')$$,'ok');
@@ -105,13 +137,15 @@ SELECT t('#72 sizeBytes = 0 rejected', $$INSERT INTO document_versions(id,"docum
 
 -- ---------- identity ----------
 SELECT t('#71 duplicate OrganizationSupervisorProfile (user, org) rejected', $$INSERT INTO organization_supervisor_profiles(id,"userId","organizationId") VALUES ('osp_dup','u_osup','org1')$$,'23505');
-SELECT t('#71 duplicate registrationNumber rejected', $$INSERT INTO student_profiles(id,"userId","registrationNumber") VALUES ('s_dup','u_admin','CIT-1')$$,'23505');
+SELECT t('#71 duplicate registrationNumber rejected', $$INSERT INTO student_profiles(id,"userId","registrationNumber","registrationDepartmentCode") VALUES ('s_dup','u_admin','CIT-221-001/2024','CIT')$$,'23505');
 SELECT t('#71 duplicate email rejected', $$INSERT INTO users(id,email,"passwordHash",name,"updatedAt") VALUES ('u_dup','s@x.com','h','Dup',now())$$,'23505');
 SELECT t('#62/#72 invitation ORG_SUPERVISOR without organization rejected', $$INSERT INTO invitations(id,email,role,"invitedByUserId","tokenHash","expiresAt") VALUES ('i1','n@x.com','ORGANIZATION_SUPERVISOR','u_admin','t1',now())$$,'23514');
 SELECT t('#62/#72 invitation STUDENT-role WITH organization rejected', $$INSERT INTO invitations(id,email,role,"organizationId","invitedByUserId","tokenHash","expiresAt") VALUES ('i2','n@x.com','UNIVERSITY_SUPERVISOR','org1','u_admin','t2',now())$$,'23514');
 SELECT t('#62/#72 invitation ORG_SUPERVISOR with organization accepted', $$INSERT INTO invitations(id,email,role,"organizationId","invitedByUserId","tokenHash","expiresAt") VALUES ('i3','n@x.com','ORGANIZATION_SUPERVISOR','org1','u_admin','t3',now())$$,'ok');
 SELECT t('#62/#72 invitation UNIVERSITY_SUPERVISOR without organization accepted', $$INSERT INTO invitations(id,email,role,"invitedByUserId","tokenHash","expiresAt") VALUES ('i4','n2@x.com','UNIVERSITY_SUPERVISOR','u_admin','t4',now())$$,'ok');
-SELECT t('#71 acceptedByUserId reused across invitations rejected', $$UPDATE invitations SET "acceptedByUserId"='u_student' WHERE id='i3'; UPDATE invitations SET "acceptedByUserId"='u_student' WHERE id='i4'$$,'23505');
+-- Accept i3 with u_student (must succeed so the unique slot is occupied for test 104)
+UPDATE invitations SET "acceptedByUserId"='u_student' WHERE id='i3';
+SELECT t('#71 acceptedByUserId reused across invitations rejected', $$UPDATE invitations SET "acceptedByUserId"='u_student' WHERE id='i4'$$,'23505');
 SELECT t('#70/#71 refresh token rotation: same replacement twice rejected', $$INSERT INTO refresh_tokens(id,"userId","tokenHash","expiresAt","sessionExpiresAt") VALUES ('rt1','u_student','h1',now(),now()),('rt2','u_student','h2',now(),now()),('rt3','u_student','h3',now(),now()); UPDATE refresh_tokens SET "replacedById"='rt3' WHERE id='rt1'; UPDATE refresh_tokens SET "replacedById"='rt3' WHERE id='rt2'$$,'23505');
 
 -- ---------- refresh-token integrity (#75, #77) ----------
@@ -140,6 +174,135 @@ SELECT t('#73 RESTRICT: deleting a Document with versions fails', $$DELETE FROM 
 SELECT t('#73 fixture: user with only tokens', $$INSERT INTO users(id,email,"passwordHash",name,"updatedAt") VALUES ('u_tok','tok@x.com','h','Tok',now()); INSERT INTO refresh_tokens(id,"userId","tokenHash","expiresAt","sessionExpiresAt") VALUES ('rt_t','u_tok','ht',now(),now()); INSERT INTO password_reset_tokens(id,"userId","tokenHash","expiresAt") VALUES ('prt_t','u_tok','hp',now()); INSERT INTO email_verification_tokens(id,"userId","tokenHash","expiresAt") VALUES ('evt_t','u_tok','hv',now())$$,'ok');
 SELECT t('#73 CASCADE: deleting that User succeeds', $$DELETE FROM users WHERE id='u_tok'$$,'ok');
 SELECT t('#73 CASCADE: its 3 token rows are gone', $$SELECT 1/(CASE WHEN (SELECT count(*) FROM refresh_tokens WHERE id='rt_t')+(SELECT count(*) FROM password_reset_tokens WHERE id='prt_t')+(SELECT count(*) FROM email_verification_tokens WHERE id='evt_t')=0 THEN 1 ELSE 0 END)$$,'ok');
+
+-- ---------- Batch B: invitation lifecycle (#83-#87) ----------
+-- Fixtures i3 and i4 from the identity section are reused here.
+-- i3 = ORGANIZATION_SUPERVISOR invitation (already accepted by u_student via the identity section)
+-- i4 = UNIVERSITY_SUPERVISOR invitation (pending, not yet accepted)
+
+-- Status derivation: PENDING — not accepted, not revoked, not expired
+SELECT t('#84 PENDING status: not accepted, not revoked, not expired',
+  $$SELECT 1 WHERE (
+    SELECT CASE
+      WHEN "acceptedByUserId" IS NOT NULL THEN 'ACCEPTED'
+      WHEN "revokedAt" IS NOT NULL THEN 'CANCELLED'
+      WHEN "expiresAt" <= (clock_timestamp() AT TIME ZONE 'UTC') THEN 'EXPIRED'
+      ELSE 'PENDING'
+    END
+    FROM invitations WHERE id = 'i4'
+  ) = 'PENDING'$$,'ok');
+
+-- Status derivation: ACCEPTED — acceptedByUserId set (i3 was accepted in the identity section)
+SELECT t('#84 ACCEPTED status: acceptedByUserId is set',
+  $$SELECT 1 WHERE (
+    SELECT CASE
+      WHEN "acceptedByUserId" IS NOT NULL THEN 'ACCEPTED'
+      WHEN "revokedAt" IS NOT NULL THEN 'CANCELLED'
+      WHEN "expiresAt" <= (clock_timestamp() AT TIME ZONE 'UTC') THEN 'EXPIRED'
+      ELSE 'PENDING'
+    END
+    FROM invitations WHERE id = 'i3'
+  ) = 'ACCEPTED'$$,'ok');
+
+-- Status derivation: CANCELLED — revokedAt set, not accepted
+SELECT t('#86 CANCELLED status: revokedAt set via UPDATE',
+  $$UPDATE invitations SET "revokedAt" = clock_timestamp() AT TIME ZONE 'UTC' WHERE id = 'i4'$$,'ok');
+SELECT t('#86 CANCELLED status derived correctly after revokedAt set',
+  $$SELECT 1 WHERE (
+    SELECT CASE
+      WHEN "acceptedByUserId" IS NOT NULL THEN 'ACCEPTED'
+      WHEN "revokedAt" IS NOT NULL THEN 'CANCELLED'
+      WHEN "expiresAt" <= (clock_timestamp() AT TIME ZONE 'UTC') THEN 'EXPIRED'
+      ELSE 'PENDING'
+    END
+    FROM invitations WHERE id = 'i4'
+  ) = 'CANCELLED'$$,'ok');
+
+-- Status derivation: EXPIRED — expiresAt in the past, not accepted, not revoked
+SELECT t('#84 EXPIRED status: insert invitation with past expiresAt',
+  $$INSERT INTO invitations(id,email,role,"invitedByUserId","tokenHash","expiresAt")
+    VALUES ('i_exp','exp@x.com','UNIVERSITY_SUPERVISOR','u_admin','t_exp',
+            (clock_timestamp() AT TIME ZONE 'UTC') - interval '1 second')$$,'ok');
+SELECT t('#84 EXPIRED status derived correctly',
+  $$SELECT 1 WHERE (
+    SELECT CASE
+      WHEN "acceptedByUserId" IS NOT NULL THEN 'ACCEPTED'
+      WHEN "revokedAt" IS NOT NULL THEN 'CANCELLED'
+      WHEN "expiresAt" <= (clock_timestamp() AT TIME ZONE 'UTC') THEN 'EXPIRED'
+      ELSE 'PENDING'
+    END
+    FROM invitations WHERE id = 'i_exp'
+  ) = 'EXPIRED'$$,'ok');
+
+-- Reissue after cancellation: a new invitation for the same email is allowed
+SELECT t('#86 reissue after cancellation: new invitation for same email accepted',
+  $$INSERT INTO invitations(id,email,role,"invitedByUserId","tokenHash","expiresAt")
+    VALUES ('i_reissue','n2@x.com','UNIVERSITY_SUPERVISOR','u_admin','t_reissue',
+            (clock_timestamp() AT TIME ZONE 'UTC') + interval '7 days')$$,'ok');
+
+-- Reissue after expiry: a new invitation for the same email is allowed
+SELECT t('#84 reissue after expiry: new invitation for same email accepted',
+  $$INSERT INTO invitations(id,email,role,"invitedByUserId","tokenHash","expiresAt")
+    VALUES ('i_reissue2','exp@x.com','UNIVERSITY_SUPERVISOR','u_admin','t_reissue2',
+            (clock_timestamp() AT TIME ZONE 'UTC') + interval '7 days')$$,'ok');
+
+-- Duplicate tokenHash rejected (#83)
+SELECT t('#83 duplicate tokenHash rejected',
+  $$INSERT INTO invitations(id,email,role,"invitedByUserId","tokenHash","expiresAt")
+    VALUES ('i_dup_hash','dup@x.com','UNIVERSITY_SUPERVISOR','u_admin','t_reissue',
+            (clock_timestamp() AT TIME ZONE 'UTC') + interval '7 days')$$,'23505');
+
+-- acceptedByUserId uniqueness: same user cannot accept two invitations (#83)
+-- u_student already has acceptedByUserId set on i3; inserting a new invitation
+-- with the same acceptedByUserId must be rejected by the unique constraint.
+SELECT t('#83 acceptedByUserId reuse across invitations rejected',
+  $$INSERT INTO invitations(id,email,role,"invitedByUserId","tokenHash","expiresAt","acceptedByUserId")
+    VALUES ('i_dup_accept','dup2@x.com','UNIVERSITY_SUPERVISOR','u_admin','t_dup_accept',
+            (clock_timestamp() AT TIME ZONE 'UTC') + interval '7 days','u_student')$$,'23505');
+
+-- No stored status column (#84)
+SELECT t('#84 no status column on invitations table',
+  $$SELECT 1/(CASE WHEN (
+    SELECT count(*) FROM information_schema.columns
+    WHERE table_schema='public' AND table_name='invitations' AND column_name='status'
+  ) = 0 THEN 1 ELSE 0 END)$$,'ok');
+
+-- Provisioning constraints: name length (#85)
+SELECT t('#85 ck_user_name_length: empty name rejected',
+  $$INSERT INTO users(id,email,"passwordHash",name,"updatedAt") VALUES ('u_name_empty','ne@x.com','h','',now())$$,'23514');
+SELECT t('#85 ck_user_name_length: 101-char name rejected',
+  $$INSERT INTO users(id,email,"passwordHash",name,"updatedAt") VALUES ('u_name_long','nl@x.com','h',repeat('x',101),now())$$,'23514');
+SELECT t('#85 ck_user_name_length: 1-char name accepted',
+  $$INSERT INTO users(id,email,"passwordHash",name,"updatedAt") VALUES ('u_name_ok','nok@x.com','h','x',now())$$,'ok');
+
+-- Provisioning constraints: staffId length (#85)
+SELECT t('#85 ck_supervisor_staff_id_length: empty staffId rejected',
+  $$INSERT INTO university_supervisor_profiles(id,"userId","staffId") VALUES ('usp_sid_empty','u_name_ok','')$$,'23514');
+SELECT t('#85 ck_supervisor_staff_id_length: 65-char staffId rejected',
+  $$INSERT INTO university_supervisor_profiles(id,"userId","staffId") VALUES ('usp_sid_long','u_name_ok',repeat('s',65))$$,'23514');
+SELECT t('#85 ck_supervisor_staff_id_length: NULL staffId accepted',
+  $$INSERT INTO university_supervisor_profiles(id,"userId") VALUES ('usp_sid_null','u_name_ok')$$,'ok');
+
+-- Provisioning constraints: title length (#85)
+SELECT t('#85 ck_supervisor_title_length: empty title rejected',
+  $$UPDATE university_supervisor_profiles SET title='' WHERE id='usp_sid_null'$$,'23514');
+SELECT t('#85 ck_supervisor_title_length: 101-char title rejected',
+  $$UPDATE university_supervisor_profiles SET title=repeat('t',101) WHERE id='usp_sid_null'$$,'23514');
+SELECT t('#85 ck_supervisor_title_length: valid title accepted',
+  $$UPDATE university_supervisor_profiles SET title='Professor' WHERE id='usp_sid_null'$$,'ok');
+
+-- C1-D3: no active student can lack verified email or a confirmed registration.
+INSERT INTO _results(name, expected, got, pass)
+SELECT
+  'C1-D3 active student invariant',
+  '0',
+  count(*)::text,
+  count(*) = 0
+FROM users u
+JOIN user_roles r ON r."userId" = u.id AND r.role = 'STUDENT'
+JOIN student_profiles p ON p."userId" = u.id
+WHERE u.status = 'ACTIVE'
+  AND (u."emailVerifiedAt" IS NULL OR p."registrationStatus" IS DISTINCT FROM 'CONFIRMED');
 
 \echo
 SELECT count(*) AS total, count(*) FILTER (WHERE pass) AS passed, count(*) FILTER (WHERE NOT pass) AS failed FROM _results;

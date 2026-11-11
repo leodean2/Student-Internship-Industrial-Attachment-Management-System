@@ -69,16 +69,23 @@ export class LoginService {
         throw Errors.unauthenticated(INVALID_CREDENTIALS_MESSAGE);
       }
 
-      // 3. The password is right, so this is not a failed attempt. Only now may account state be revealed.
-      permit.succeeded();
+      // 3. Correct password. Load the actor BEFORE refunding the attempt.
+      //    Decision #55: login must never disclose account state. All actor denials — ACCOUNT_INACTIVE
+      //    (pending/deactivated) and UNAUTHENTICATED (role-less/SYSTEM sentinel) — return the same generic
+      //    invalid-credentials response and count as failed attempts. Only unexpected errors (database down)
+      //    propagate unchanged and are refunded, because they are not credential failures.
+      //    Note: ACCOUNT_INACTIVE is allowed from /auth/me for a valid token (authenticate middleware),
+      //    and only there — that path does not go through login.
       try {
-        await actors.load(record.userId); // ACCOUNT_INACTIVE for deactivated/unverified; UNAUTHENTICATED if role-less
-      } catch (err) {
-        if (err instanceof AppError && err.code === "UNAUTHENTICATED") {
-          throw Errors.unauthenticated(INVALID_CREDENTIALS_MESSAGE); // e.g. the SYSTEM sentinel: never reveal why
+        await actors.load(record.userId);
+      } catch (error) {
+        if (error instanceof AppError && (error.code === "ACCOUNT_INACTIVE" || error.code === "UNAUTHENTICATED")) {
+          rejected = true;
+          throw Errors.unauthenticated(INVALID_CREDENTIALS_MESSAGE);
         }
-        throw err;
+        throw error; // infrastructure errors: not a failed guess, refunded
       }
+      permit.succeeded();
 
       // 4. Open the session. A new session's first token always has the full TTL (the 30-day cap is far longer).
       const session = await sessions.startSession(record.userId);

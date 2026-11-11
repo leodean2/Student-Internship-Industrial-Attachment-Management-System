@@ -1,5 +1,5 @@
 import type { Logger } from "../../infrastructure/logger";
-import type { TxRunner } from "../../infrastructure/transaction";
+import type { Tx, TxRunner } from "../../infrastructure/transaction";
 import { Errors } from "../../shared/errors";
 import { hashToken, mintOpaqueToken } from "../../shared/security/opaque-token";
 import type { ActorContextService } from "./actor-context.service";
@@ -164,6 +164,10 @@ export class SessionService {
 
   /** For account deactivation and password reset (built in later slices): ends every session of a user (#51). */
   async revokeAllSessions(userId: string): Promise<number> {
-    return this.deps.runTx(async (tx) => this.deps.repo.revokeAllForUser(tx, userId, await this.deps.repo.now(tx)));
+    return this.deps.runTx((tx) => this.revokeAllSessionsInTransaction(tx, userId));
+  }
+
+  async revokeAllSessionsInTransaction(tx: Tx, userId: string): Promise<number> {
+    return this.deps.repo.revokeAllForUser(tx, userId, await this.deps.repo.now(tx));
   }
 }

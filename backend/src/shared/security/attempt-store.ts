@@ -2,6 +2,8 @@
  * Sliding-window attempt storage, shared by every throttle (login, invitation acceptance, later verification
  * and password reset). In memory in V1: counters reset on restart and are not shared between API instances.
  * A shared store (e.g. PostgreSQL) can implement AttemptStore without touching callers.
+ *
+ * Bounded memory: past `maxKeys` the least recently attempted key is forgotten.
  */
 export interface AttemptStore {
   /**
@@ -34,6 +36,7 @@ export class InMemoryAttemptStore implements AttemptStore {
   tryRecord(key: string, limit: number, windowMs: number, now: number): number {
     this.sweep(windowMs, now);
     const live = (this.entries.get(key) ?? []).filter((at) => now - at < windowMs);
+    this.entries.delete(key);
     if (live.length >= limit) {
       this.entries.set(key, live);
       return Math.max(1, Math.ceil((live[0]! + windowMs - now) / 1000));
@@ -67,7 +70,7 @@ export class InMemoryAttemptStore implements AttemptStore {
     }
   }
 
-  /** Safety valve: past maxKeys the oldest-inserted keys are forgotten (fails open, bounded memory). */
+  /** Safety valve: past maxKeys the least recently attempted keys are forgotten (fails open, bounded memory). */
   private evictOverflow(): void {
     while (this.entries.size > this.maxKeys) {
       const oldest = this.entries.keys().next();

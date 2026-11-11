@@ -11,6 +11,8 @@
 -- -----------------------------------------------------------------------------
 -- PARTIAL UNIQUE INDEXES  (#71)
 -- -----------------------------------------------------------------------------
+-- NOTE: these statements are already applied by migration 20261014171000_constraints. Do not edit them;
+-- later constraints belong in their own migrations (for example, Decision #88's email CHECK).
 
 -- #7/#34/#35: one unresolved application per student
 CREATE UNIQUE INDEX "uq_application_one_unresolved_per_student"
@@ -127,6 +129,55 @@ ALTER TABLE "document_versions"
 ALTER TABLE "invitations"
   ADD CONSTRAINT "ck_invitation_role_org_pairing"
     CHECK (("role" = 'ORGANIZATION_SUPERVISOR') = ("organizationId" IS NOT NULL));
+
+-- -----------------------------------------------------------------------------
+-- REGISTRATION REVIEWER (C1-D1): active department-scoped reviewer assignments
+-- -----------------------------------------------------------------------------
+
+CREATE UNIQUE INDEX "uq_registration_reviewers_active"
+  ON "registration_reviewers" ("userId", "departmentCode")
+  WHERE "revokedAt" IS NULL;
+
+ALTER TABLE "registration_reviewers"
+  ADD CONSTRAINT "ck_registration_reviewers_department_code"
+    CHECK ("departmentCode" ~ '^[A-Z0-9]{2,10}$'),
+  ADD CONSTRAINT "ck_registration_reviewers_revocation_consistent"
+    CHECK (("revokedAt" IS NULL) = ("revokedByUserId" IS NULL));
+
+-- -----------------------------------------------------------------------------
+-- STUDENT ROSTER (C1-D2): normalized identifiers and exhaustive import counts
+-- -----------------------------------------------------------------------------
+
+ALTER TABLE "student_roster_entries"
+  ADD CONSTRAINT "ck_roster_entries_number_normalized"
+    CHECK ("registrationNumber" <> '' AND "registrationNumber" = upper(btrim("registrationNumber")));
+
+ALTER TABLE "student_roster_imports"
+  ADD CONSTRAINT "ck_roster_imports_counts"
+    CHECK (
+      "insertedCount" >= 0 AND "skippedCount" >= 0 AND "conflictCount" >= 0
+      AND "invalidCount" >= 0 AND "duplicateCount" >= 0
+      AND "rowCount" = "insertedCount" + "skippedCount" + "conflictCount" + "invalidCount" + "duplicateCount"
+    );
+
+-- -----------------------------------------------------------------------------
+-- STUDENT REGISTRATION REVIEW (C1-D3): profile decision-state consistency
+-- -----------------------------------------------------------------------------
+
+ALTER TABLE "student_profiles"
+  ADD CONSTRAINT "ck_student_profiles_confirmed_complete"
+    CHECK ("registrationStatus" <> 'CONFIRMED' OR (
+      "registrationNumber" IS NOT NULL AND "registrationDecidedAt" IS NOT NULL
+      AND "registrationDecidedByUserId" IS NOT NULL AND "registrationDecisionBasis" IS NOT NULL
+    )),
+  ADD CONSTRAINT "ck_student_profiles_rejected_complete"
+    CHECK ("registrationStatus" <> 'REJECTED' OR (
+      "registrationNumber" IS NULL AND "rejectedRegistrationNumber" IS NOT NULL
+      AND "registrationDecidedAt" IS NOT NULL AND "registrationDecidedByUserId" IS NOT NULL
+      AND "registrationDecisionReason" IS NOT NULL
+    )),
+  ADD CONSTRAINT "ck_student_profiles_pending_has_number"
+    CHECK ("registrationStatus" <> 'PENDING' OR "registrationNumber" IS NOT NULL);
 
 -- -----------------------------------------------------------------------------
 -- EMAIL OUTBOX  (#72)

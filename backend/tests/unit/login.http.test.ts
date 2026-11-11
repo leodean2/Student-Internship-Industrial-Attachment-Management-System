@@ -101,14 +101,17 @@ describe("POST /api/v1/auth/login: failures", () => {
     expect(tokenRepo.rows.size).toBe(0);
   });
 
-  it("deactivated and unverified accounts: ACCOUNT_INACTIVE only with the correct password", async () => {
+  it("deactivated and unverified accounts: same generic failure as wrong password, regardless of password correctness", async () => {
     const { app, tokenRepo } = build();
     for (const email of ["gone@example.test", "new@example.test"]) {
       const right = await attempt(app, creds({ email }));
       expect(right.status).toBe(401);
-      expect(right.body.error.code).toBe("ACCOUNT_INACTIVE");
+      expect(right.body.error).toMatchObject({ code: "UNAUTHENTICATED", message: "Invalid email or password." });
       const wrong = await attempt(app, creds({ email, password: "wrong-password" }));
-      expect(wrong.body.error.code).toBe("UNAUTHENTICATED");
+      expect(wrong.body.error).toMatchObject({ code: "UNAUTHENTICATED", message: "Invalid email or password." });
+      // Both must be identical — no state disclosure
+      expect(right.body.error.code).toBe(wrong.body.error.code);
+      expect(right.body.error.message).toBe(wrong.body.error.message);
     }
     expect(tokenRepo.rows.size).toBe(0);
   });
@@ -188,6 +191,45 @@ describe("POST /api/v1/auth/login: throttling", () => {
     for (let i = 0; i < 10; i++) await attempt(app, creds({ password: "wrong" }), { "X-Forwarded-For": "203.0.113.1" });
     expect((await attempt(app, creds(), { "X-Forwarded-For": "203.0.113.1" })).status).toBe(429);
     expect((await attempt(app, creds(), { "X-Forwarded-For": "203.0.113.2" })).status).toBe(200);
+  });
+});
+
+describe("POST /api/v1/auth/login: global per-email throttling", () => {
+  const forwarded = (i: number) => ({ "X-Forwarded-For": `203.0.${Math.floor(i / 250)}.${(i % 250) + 1}` });
+
+  it("refuses the 31st failed attempt across different addresses before password work", async () => {
+    const { app } = build(1);
+    for (let i = 0; i < 30; i++) {
+      expect((await attempt(app, creds({ password: "wrong" }), forwarded(i))).status).toBe(401);
+    }
+    const blocked = await attempt(app, creds(), forwarded(99));
+    expect(blocked.status).toBe(429);
+    expect(blocked.body.error.code).toBe("RATE_LIMITED");
+    expect(blocked.headers["retry-after"]).toBe("900");
+    expect(setCookies(blocked)).toHaveLength(0);
+  });
+
+  it("refuses known and unknown emails identically", async () => {
+    const known = build(1);
+    const unknown = build(1);
+    for (let i = 0; i < 30; i++) {
+      await attempt(known.app, creds({ password: "wrong" }), forwarded(i));
+      await attempt(unknown.app, creds({ email: "nobody@example.test", password: "wrong" }), forwarded(i));
+    }
+    const a = await attempt(known.app, creds(), forwarded(99));
+    const b = await attempt(unknown.app, creds({ email: "nobody@example.test" }), forwarded(99));
+    expect(a.status).toBe(429);
+    expect(b.status).toBe(429);
+    expect(a.body.error).toMatchObject({ code: b.body.error.code, message: b.body.error.message });
+    expect(a.headers["retry-after"]).toBe(b.headers["retry-after"]);
+  });
+
+  it("recovers after the 15-minute window", async () => {
+    const { app, throttleClock } = build(1);
+    for (let i = 0; i < 30; i++) await attempt(app, creds({ password: "wrong" }), forwarded(i));
+    expect((await attempt(app, creds(), forwarded(99))).status).toBe(429);
+    throttleClock.now += 15 * 60_000;
+    expect((await attempt(app, creds(), forwarded(99))).status).toBe(200);
   });
 });
 
