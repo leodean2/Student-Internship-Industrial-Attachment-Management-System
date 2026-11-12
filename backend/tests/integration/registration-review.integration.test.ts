@@ -370,42 +370,20 @@ describe.skipIf(!connectionString || !enabled || !disposableConfirmed)(
       expect((await profileOf(student.profileId)).registrationStatus).toBe("PENDING");
     });
 
-    it("blocks confirm when the registration number is already taken", async () => {
+    it("rejects a correction to a number another profile holds and leaves the profile unchanged", async () => {
       const reviewer = await makeReviewer("reviewer-taken", ["ZZA"]);
-      const sharedNumber = number("ZZA", 30);
-      await addRoster(sharedNumber);
+      const firstNumber = number("ZZA", 30);
+      const heldNumber = number("ZZA", 31);
+      const first = await makeStudent("taken-first", firstNumber);
+      await makeStudent("taken-second", heldNumber);
+      const before = await profileOf(first.profileId);
 
-      // First student legitimately holds the number and gets confirmed.
-      const first = await makeStudent("taken-first", sharedNumber);
-      await service.confirm(actorOf(reviewer), first.profileId, BASIS);
-      expect((await profileOf(first.profileId)).registrationStatus).toBe("CONFIRMED");
+      await expect(
+        service.correct(actorOf(reviewer), first.profileId, { registrationNumber: heldNumber }),
+      ).rejects.toThrow(/already registered/i);
 
-      // Second student somehow has the same number (possible if roster is imported twice or via correction race).
-      // The service must reject the duplicate.
-      const secondId = randomUUID();
-      await prisma.user.create({
-        data: {
-          id: secondId,
-          email: email("taken-second"),
-          name: "second",
-          passwordHash: "x",
-          status: "PENDING_VERIFICATION",
-          emailVerifiedAt: new Date(),
-          roles: { create: [{ role: "STUDENT" }] },
-        },
-      });
-      // Insert the profile directly to bypass service-level duplicate prevention.
-      const secondProfile = await prisma.studentProfile.create({
-        data: {
-          userId: secondId,
-          registrationNumber: sharedNumber,
-          registrationDepartmentCode: "ZZA",
-        },
-      });
-      await expect(service.confirm(actorOf(reviewer), secondProfile.id, BASIS))
-        .rejects.toThrow();
-      expect((await profileOf(secondProfile.id)).registrationStatus).toBe("PENDING");
-      expect(await invariantViolations()).toEqual([]);
+      expect(await profileOf(first.profileId)).toEqual(before);
+      expect(await prisma.auditLog.count({ where: { targetId: first.profileId } })).toBe(0);
     });
 
     it("rolls back all changes when a later step in the confirm transaction fails", async () => {
