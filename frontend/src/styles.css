@@ -52,6 +52,12 @@ input {
   border-radius: 0.25rem;
 }
 
+.hint {
+  margin: 0.25rem 0;
+  color: #4a4a4a;
+  font-size: 0.9rem;
+}
+
 button {
   margin-top: 1rem;
   padding: 0.7rem 1rem;

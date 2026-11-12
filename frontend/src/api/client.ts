@@ -6,6 +6,14 @@ export type ApiResult =
   | { ok: true }
   | { ok: false; failure: ApiFailure; retryAfterSeconds: number | null };
 
+export type ApiJsonResult =
+  | { ok: true; data: unknown }
+  | { ok: false; failure: ApiFailure; retryAfterSeconds: number | null };
+
+type RequestOutcome =
+  | { response: Response }
+  | { failure: ApiFailure; retryAfterSeconds: number | null };
+
 function classify(status: number): ApiFailure {
   if (status === 429) return "rate_limited";
   if (status === 400 || status === 422) return "validation";
@@ -19,11 +27,11 @@ function parseRetryAfter(value: string | null): number | null {
   return Number.isInteger(seconds) && seconds >= 0 ? seconds : null;
 }
 
-export async function postJson(
+async function sendJson(
   path: string,
   body: unknown,
   options: { credentials?: RequestCredentials } = {},
-): Promise<ApiResult> {
+): Promise<RequestOutcome> {
   let response: Response;
   try {
     response = await fetch(`${API_BASE_URL}${path}`, {
@@ -34,12 +42,42 @@ export async function postJson(
       cache: "no-store",
     });
   } catch {
-    return { ok: false, failure: "network", retryAfterSeconds: null };
+    return { failure: "network", retryAfterSeconds: null };
   }
-  if (response.ok) return { ok: true };
+  return { response };
+}
+
+function failureForResponse(response: Response) {
   return {
-    ok: false,
+    ok: false as const,
     failure: classify(response.status),
     retryAfterSeconds: parseRetryAfter(response.headers.get("Retry-After")),
   };
+}
+
+export async function postJson(
+  path: string,
+  body: unknown,
+  options: { credentials?: RequestCredentials } = {},
+): Promise<ApiResult> {
+  const outcome = await sendJson(path, body, options);
+  if ("failure" in outcome) return { ok: false, ...outcome };
+  if (outcome.response.ok) return { ok: true };
+  return failureForResponse(outcome.response);
+}
+
+export async function postJsonForData(
+  path: string,
+  body: unknown,
+  options: { credentials?: RequestCredentials } = {},
+): Promise<ApiJsonResult> {
+  const outcome = await sendJson(path, body, options);
+  if ("failure" in outcome) return { ok: false, ...outcome };
+  if (!outcome.response.ok) return failureForResponse(outcome.response);
+
+  try {
+    return { ok: true, data: await outcome.response.json() };
+  } catch {
+    return { ok: false, failure: "server", retryAfterSeconds: null };
+  }
 }
