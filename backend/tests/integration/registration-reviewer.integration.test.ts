@@ -14,7 +14,6 @@ const enabled = process.env.RUN_EMAIL_OUTBOX_INTEGRATION === "true";
 const disposableConfirmed = process.env.OUTBOX_TEST_DB_DISPOSABLE === "true";
 const run = randomUUID().replaceAll("-", "").slice(0, 10);
 const emailPrefix = `rev-it-${run}-`;
-const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
 describe.skipIf(!connectionString || !enabled || !disposableConfirmed)(
   "registration reviewer permission on PostgreSQL (C1-D1)",
@@ -216,16 +215,23 @@ describe.skipIf(!connectionString || !enabled || !disposableConfirmed)(
       );
       await ready;
 
-      let revokeSettled = false;
-      const revoke = service.revoke(adminActor, assignment.id).then(() => {
-        revokeSettled = true;
+      const revokeWithLockTimeout = new RegistrationReviewerService({
+        repo,
+        audit: new PrismaAuditRepository(),
+        runTx: (fn) =>
+          prisma.$transaction(async (tx) => {
+            await tx.$executeRaw`SET LOCAL lock_timeout = '750ms'`;
+            return fn(tx);
+          }),
       });
-      await sleep(1500);
-      expect(revokeSettled).toBe(false);
+      try {
+        await expect(revokeWithLockTimeout.revoke(adminActor, assignment.id)).rejects.toThrow(/lock timeout/i);
+      } finally {
+        release();
+        await decision;
+      }
 
-      release();
-      await decision;
-      await revoke;
+      await service.revoke(adminActor, assignment.id);
       expect((await prisma.registrationReviewer.findUniqueOrThrow({ where: { id: assignment.id } })).revokedAt).not.toBeNull();
       await expect(
         prisma.$transaction((tx) => policy.assertCanReview(tx, supervisor, "CIT")),

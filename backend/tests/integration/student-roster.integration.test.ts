@@ -2,7 +2,9 @@ import { randomUUID } from "node:crypto";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@prisma/client";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import type { Tx } from "../../src/infrastructure/transaction";
 import { prismaTxRunner } from "../../src/infrastructure/transaction";
+import { acquireTransactionLock } from "../../src/infrastructure/advisory-lock";
 import { PrismaAuditRepository } from "../../src/modules/audit/audit.repository";
 import type { ActorContext } from "../../src/modules/auth/actor-context";
 import { RosterLookup } from "../../src/modules/student-roster/roster-lookup";
@@ -28,8 +30,16 @@ describe.skipIf(!connectionString || !enabled || !disposableConfirmed)(
     let actor: ActorContext;
     const repo = new PrismaStudentRosterRepository();
 
-    const build = (audit = new PrismaAuditRepository()) =>
-      new StudentRosterService({ repo, audit, runTx: prismaTxRunner(prisma, { maxWait: 10_000, timeout: 30_000 }) });
+    const build = (
+      audit = new PrismaAuditRepository(),
+      acquireLock?: (tx: Tx, key: string) => Promise<void>,
+    ) =>
+      new StudentRosterService({
+        repo,
+        audit,
+        runTx: prismaTxRunner(prisma, { maxWait: 10_000, timeout: 30_000 }),
+        ...(acquireLock ? { acquireLock } : {}),
+      });
 
     async function cleanup() {
       await prisma.studentRosterEntry.deleteMany({ where: { registrationNumber: { in: [...numbers] } } });
@@ -161,10 +171,20 @@ describe.skipIf(!connectionString || !enabled || !disposableConfirmed)(
 
     it("serializes concurrent identical commits so each row is inserted exactly once", async () => {
       const file = csv(`${N1},A,ACTIVE`, `${N2},B,ACTIVE`, `${N3},C,ACTIVE`);
+      let lockCalls = 0;
+      let release!: () => void;
+      const bothAtLock = new Promise<void>((resolve) => (release = resolve));
+      const concurrentService = build(new PrismaAuditRepository(), async (tx, key) => {
+        lockCalls += 1;
+        if (lockCalls === 2) release();
+        await bothAtLock;
+        await acquireTransactionLock(tx, key);
+      });
       const [first, second] = await Promise.all([
-        service.importCsv(actor, file, { dryRun: false }),
-        service.importCsv(actor, file, { dryRun: false }),
+        concurrentService.importCsv(actor, file, { dryRun: false }),
+        concurrentService.importCsv(actor, file, { dryRun: false }),
       ]);
+      expect(lockCalls).toBe(2);
       expect(first.counts.inserted + second.counts.inserted).toBe(3);
       expect(first.counts.skipped + second.counts.skipped).toBe(3);
       expect(await prisma.studentRosterEntry.count({ where: { registrationNumber: { in: [...numbers] } } })).toBe(

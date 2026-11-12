@@ -249,6 +249,46 @@ describe.skipIf(!connectionString || !enabled || !disposableConfirmed)(
       expect(await invariantViolations()).toEqual([]);
     });
 
+    it("does not activate an account if email verification changes during confirmation", async () => {
+      const reviewer = await makeReviewer("reviewer-verification-race", ["ZZA"]);
+      const registrationNumber = number("ZZA", 41);
+      const student = await makeStudent("verification-race", registrationNumber);
+      await addRoster(registrationNumber);
+
+      const functionName = `clear_verification_during_confirm_${run}`;
+      const triggerName = `clear_verification_during_confirm_${run}`;
+      await prisma.$executeRawUnsafe(`
+        CREATE FUNCTION "${functionName}"() RETURNS trigger LANGUAGE plpgsql AS $$
+        BEGIN
+          UPDATE users SET "emailVerifiedAt" = NULL WHERE id = NEW."userId";
+          RETURN NEW;
+        END; $$`);
+      await prisma.$executeRawUnsafe(`
+        CREATE TRIGGER "${triggerName}" BEFORE UPDATE OF "registrationStatus" ON student_profiles
+        FOR EACH ROW
+        WHEN (OLD."registrationStatus" = 'PENDING' AND NEW."registrationStatus" = 'CONFIRMED')
+        EXECUTE FUNCTION "${functionName}"()`);
+
+      try {
+        await expect(service.confirm(actorOf(reviewer), student.profileId, BASIS))
+          .rejects.toMatchObject({ status: 409 });
+        expect(await profileOf(student.profileId)).toMatchObject({
+          registrationStatus: "PENDING",
+          registrationNumber,
+        });
+        expect(await userOf(student.userId)).toMatchObject({
+          status: "PENDING_VERIFICATION",
+          emailVerifiedAt: expect.any(Date),
+        });
+        expect(await outboxFor(student.userId)).toHaveLength(0);
+        expect(await prisma.auditLog.count({ where: { targetId: student.profileId } })).toBe(0);
+        expect(await invariantViolations()).toEqual([]);
+      } finally {
+        await prisma.$executeRawUnsafe(`DROP TRIGGER IF EXISTS "${triggerName}" ON student_profiles`);
+        await prisma.$executeRawUnsafe(`DROP FUNCTION IF EXISTS "${functionName}"()`);
+      }
+    });
+
     it("rejects a claim, releases its number, and keeps the account pending", async () => {
       const reviewer = await makeReviewer("reviewer-reject", ["ZZA"]);
       const registrationNumber = number("ZZA", 5);
